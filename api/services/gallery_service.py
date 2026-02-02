@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 import json
 
 # 图库根目录
-GALLERY_ROOT = Path("/home/disk2/lora_training/gallery")
+GALLERY_ROOT = Path(os.environ.get("GALLERY_ROOT", "./data/gallery"))
 GALLERY_ROOT.mkdir(parents=True, exist_ok=True)
 
 

@@ -183,3 +183,33 @@ inference_tasks.json
 submodules/
 *.zip
 *.tar.gz
+
+# 环境配置 (包含敏感信息)
+.env
+.env.local
+.env.production
+
+# 本地数据
+data/
+pretrained_models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# 任务数据
+tasks.json
+inference_tasks.json
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+/tmp/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp

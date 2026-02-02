@@ -1,12 +1,14 @@
 /**
  * ODEO AI Studio
+ * 视频 LoRA 训练与推理平台
  */
 
+// 配置将从后端 API 获取，这里只是默认值
 const CONFIG = {
-    datasetPath: '/home/disk2/lora_training/datasets',
-    rawPath: '/home/disk2/lora_training/datasets/raw',
-    outputPath: '/home/disk2/lora_training/outputs',
-    modelPath: '/home/disk1/pretrained_models/Wan2.1-I2V-14B-480P'
+    datasetPath: './data/datasets',
+    rawPath: './data/datasets/raw',
+    outputPath: './data/outputs',
+    modelPath: './pretrained_models/Wan2.1-I2V-14B-480P'
 };
 
 const State = {

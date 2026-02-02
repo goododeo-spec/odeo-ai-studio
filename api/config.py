@@ -13,12 +13,13 @@ class Config:
     API_VERSION = 'v1'
     API_PREFIX = f'/api/{API_VERSION}'
 
-    # 存储路径
-    STORAGE_ROOT = Path('/home/disk2/lora_training')
-    MODELS_ROOT = Path('/home/disk1/pretrained_models')
+    # 存储路径 (通过环境变量配置，支持不同部署环境)
+    STORAGE_ROOT = Path(os.environ.get('STORAGE_ROOT', './data'))
+    MODELS_ROOT = Path(os.environ.get('MODELS_ROOT', './pretrained_models'))
     TRAINING_OUTPUT_ROOT = STORAGE_ROOT / 'outputs'
     PREPROCESSED_DATA_ROOT = STORAGE_ROOT / 'datasets'
     DATASETS_ROOT = STORAGE_ROOT / 'datasets'
+    GALLERY_ROOT = STORAGE_ROOT / 'gallery'
 
     # GPU 监控配置
     GPU_MONITOR_INTERVAL = 5  # 秒

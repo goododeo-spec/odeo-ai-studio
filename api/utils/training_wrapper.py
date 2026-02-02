@@ -235,7 +235,7 @@ class TrainingWrapper:
         model_config = config.get("model", {})
         full_config["model"] = {
             "type": model_type,
-            "ckpt_path": model_config.get("ckpt_path", "/home/disk1/pretrained_models/Wan2.1-I2V-14B-480P"),
+            "ckpt_path": model_config.get("ckpt_path", os.environ.get("MODELS_ROOT", "./pretrained_models/Wan2.1-I2V-14B-480P")),
             "dtype": model_config.get("dtype", "bfloat16"),
             "transformer_dtype": model_config.get("transformer_dtype", "float8"),
             "timestep_sample_method": model_config.get("timestep_sample_method", "uniform"),
@@ -267,7 +267,7 @@ class TrainingWrapper:
             
             # 确保有 directory 配置，如果没有则使用默认值
             if 'directory' not in dataset:
-                dataset['directory'] = [{'path': '/home/disk2/lora_training/datasets', 'num_repeats': 5}]
+                dataset['directory'] = [{'path': os.environ.get('DATASET_PATH', './data/datasets'), 'num_repeats': 5}]
             
             # 生成数据集配置文件
             dataset_config_file = config_dir / f"{task_id}_dataset.toml"
@@ -277,7 +277,7 @@ class TrainingWrapper:
             full_config["dataset"] = str(dataset_config_file)
         else:
             # 使用默认的数据集配置文件
-            full_config["dataset"] = "/home/disk2/diffusion-pipe/examples/wan_odeo_data.toml"
+            full_config["dataset"] = os.path.join(os.path.dirname(__file__), "../../examples/wan_odeo_data.toml")
 
         # 写入配置文件
         with open(config_file, 'w', encoding='utf-8') as f:

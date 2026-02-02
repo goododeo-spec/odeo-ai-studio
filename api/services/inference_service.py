@@ -15,10 +15,10 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 # 配置路径
-MODELS_ROOT = Path("/home/disk1/pretrained_models/Wan2.1-I2V-14B-480P")
-LORA_ROOT = Path("/home/disk2/lora_training/outputs")
-OUTPUT_ROOT = Path("/home/disk2/lora_training/outputs/inference")
-TEST_IMAGES_ROOT = Path("/home/disk2/lora_training/datasets")
+MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "./pretrained_models/Wan2.1-I2V-14B-480P"))
+LORA_ROOT = Path(os.environ.get("LORA_ROOT", "./data/outputs"))
+OUTPUT_ROOT = Path(os.environ.get("INFERENCE_OUTPUT_ROOT", "./data/outputs/inference"))
+TEST_IMAGES_ROOT = Path(os.environ.get("DATASET_PATH", "./data/datasets"))
 
 # 确保输出目录存在
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)

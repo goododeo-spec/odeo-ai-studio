@@ -1,8 +1,10 @@
 # Output path for training runs. Each training run makes a new directory in here.
-output_dir = '/home/disk2/lora_training/outputs' 
+# 输出目录 (根据实际环境修改)
+output_dir = './data/outputs' 
 
 # Dataset config file.
-dataset = '/home/disk2/diffusion-pipe/examples/wan_odeo_data.toml'
+# 数据集配置文件 (相对于项目根目录)
+dataset = './examples/wan_odeo_data.toml'
 # You can have separate eval datasets. Give them a name for Tensorboard metrics.
 # eval_datasets = [
 #     {name = 'something', config = 'path/to/eval_dataset.toml'},
@@ -68,7 +70,8 @@ type = 'wan'
 # ckpt_path = '/root/autodl-tmp/diffusion-pipe/pretrained_models/Wan2.2-I2V-A14B'
 # transformer_path = '/root/autodl-tmp/diffusion-pipe/pretrained_models/Wan2.2-I2V-A14B/low_noise_model'
 
-ckpt_path = '/home/disk1/pretrained_models/Wan2.1-I2V-14B-480P'
+# 预训练模型路径 (根据实际环境修改)
+ckpt_path = './pretrained_models/Wan2.1-I2V-14B-480P'
 
 # Or you can load it by pointing to all the ComfyUI files.
 # transformer_path = '/data2/imagegen_models/hunyuan_video_comfyui/hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors'

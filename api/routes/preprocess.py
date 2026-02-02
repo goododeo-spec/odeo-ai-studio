@@ -13,8 +13,8 @@ from utils.common import create_response
 
 preprocess_bp = Blueprint('preprocess', __name__, url_prefix='/api/v1/preprocess')
 
-DATASET_PATH = '/home/disk2/lora_training/datasets'
-RAW_PATH = '/home/disk2/lora_training/datasets/raw'
+DATASET_PATH = os.environ.get('DATASET_PATH', './data/datasets')
+RAW_PATH = os.environ.get('RAW_PATH', './data/datasets/raw')
 
 os.makedirs(DATASET_PATH, exist_ok=True)
 os.makedirs(RAW_PATH, exist_ok=True)

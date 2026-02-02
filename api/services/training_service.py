@@ -23,7 +23,7 @@ from services.gpu_service import gpu_service
 from utils.training_wrapper import TrainingWrapper
 
 # 训练输出目录
-TRAINING_OUTPUT_ROOT = Path("/home/disk2/lora_training/outputs")
+TRAINING_OUTPUT_ROOT = Path(os.environ.get("TRAINING_OUTPUT_ROOT", "./data/outputs"))
 TASKS_FILE = TRAINING_OUTPUT_ROOT / "tasks.json"
 
 class TrainingService:
