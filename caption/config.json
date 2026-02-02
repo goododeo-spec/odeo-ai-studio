@@ -1,0 +1,8 @@
+{
+  "video_directory": "/mnt/disk0/lora数据集/3",
+  "output_directory": "/mnt/disk0/train_data/3",
+  "prompt_prefix": "Raise both hands and shake chest.",
+  "caption_method": "detailed",
+  "use_qwen_optimize": true,
+  "frame_number": 30
+}

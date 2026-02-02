@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ODEO AI Studio</title>
+    <link rel="stylesheet" href="/static/css/main.css?v=19">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-logo">
+                <svg viewBox="0 0 32 32" fill="none" width="32" height="32">
+                    <rect width="32" height="32" rx="8" fill="url(#logoGrad)"/>
+                    <path d="M10 16L14 20L22 12" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <defs>
+                        <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32">
+                            <stop stop-color="#6366f1"/>
+                            <stop offset="1" stop-color="#8b5cf6"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+                <span>ODEO AI Studio</span>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <a href="#" class="nav-item active" data-page="home" onclick="navigateTo('home')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                        模型训练
+                    </a>
+                    <a href="#" class="nav-item" data-page="inference" onclick="navigateTo('inference')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        推理测试
+                    </a>
+                    <a href="#" class="nav-item" data-page="gallery" onclick="navigateTo('gallery')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                            <circle cx="8.5" cy="8.5" r="1.5"/>
+                            <polyline points="21 15 16 10 5 21"/>
+                        </svg>
+                        图库管理
+                    </a>
+                </div>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar">U</div>
+                    <span>User</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main">
+            <!-- ====== 首页 ====== -->
+            <div class="page active" id="page-home">
+                <header class="page-header">
+                    <h1 class="page-title">模型训练</h1>
+                    <div class="page-actions">
+                        <input type="text" class="search-input" placeholder="训练任务名称" id="search-input">
+                    </div>
+                </header>
+
+                <div class="start-section">
+                    <button class="start-training-btn" onclick="startNewTraining()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 8v8M8 12h8"/>
+                        </svg>
+                        新建任务
+                    </button>
+                </div>
+
+                <section class="task-list-section">
+                    <div class="section-header">
+                        <h2>训练任务列表</h2>
+                    </div>
+                    <div class="task-grid" id="task-grid"></div>
+                    <div class="load-more"><span>暂无更多</span></div>
+                </section>
+            </div>
+
+            <!-- ====== 训练配置页 ====== -->
+            <div class="page" id="page-training">
+                <header class="page-header training-header">
+                    <div class="header-left">
+                        <button class="back-btn" onclick="showHomePage()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M15 18l-6-6 6-6"/>
+                            </svg>
+                            返回
+                        </button>
+                        <span class="save-status" id="save-status"></span>
+                    </div>
+                    <h1 class="page-title center">模型训练</h1>
+                    <div class="header-right">
+                        <div class="gpu-indicators" id="gpu-indicators"></div>
+                    </div>
+                </header>
+
+                <div class="training-content">
+                    <!-- 左侧：训练数据区 -->
+                    <section class="data-panel">
+                        <div class="panel-header">
+                            <h2>训练数据</h2>
+                            <div class="panel-actions">
+                                <div class="process-status" id="process-status" style="display:none;">
+                                    <span class="status-spinner"></span>
+                                    <span class="status-text" id="status-text">处理中...</span>
+                                </div>
+                                <button class="btn-secondary" onclick="document.getElementById('raw-file-input').click()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                        <path d="M12 5v14M5 12h14"/>
+                                    </svg>
+                                    添加视频
+                                </button>
+                                <button class="btn-primary" id="btn-process" onclick="showProcessModal()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                                    </svg>
+                                    开始处理
+                                </button>
+                                <input type="file" id="raw-file-input" multiple accept="video/*" style="display:none" onchange="handleAddVideos(this.files)">
+                            </div>
+                        </div>
+                        
+                        <div class="data-tabs">
+                            <button class="data-tab active" data-tab="raw" onclick="switchDataTab('raw')">
+                                原始视频 <span class="count" id="raw-count">0</span>
+                            </button>
+                            <button class="data-tab" data-tab="processed" onclick="switchDataTab('processed')">
+                                已处理 <span class="count" id="processed-count">0</span>
+                            </button>
+                        </div>
+
+                        <div class="data-content active" id="tab-raw">
+                            <div class="upload-zone" id="upload-zone" onclick="document.getElementById('raw-file-input').click()">
+                                <div class="upload-icon">
+                                    <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5">
+                                        <rect x="12" y="20" width="40" height="32" rx="4"/>
+                                        <path d="M20 36l12-12 12 12"/>
+                                        <path d="M32 24v20"/>
+                                    </svg>
+                                </div>
+                                <p class="upload-text">点击上传或拖拽视频到此处</p>
+                                <p class="upload-hint">支持 MP4/MOV/AVI/MKV 格式</p>
+                            </div>
+                            <div class="raw-video-grid" id="raw-video-grid" style="display:none;"></div>
+                        </div>
+
+                        <div class="data-content" id="tab-processed">
+                            <div class="processed-list" id="processed-list"></div>
+                            <div class="empty-state" id="processed-empty">
+                                <p>暂无已处理的视频</p>
+                                <p class="hint">请先添加原始视频并点击「开始处理」</p>
+                            </div>
+                        </div>
+
+                        <div class="path-info">
+                            <div class="path-item">
+                                <span class="path-label">原始数据</span>
+                                <code>/home/disk2/lora_training/datasets/raw</code>
+                            </div>
+                            <div class="path-item">
+                                <span class="path-label">处理后</span>
+                                <code>/home/disk2/lora_training/datasets</code>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 右侧：配置区 -->
+                    <aside class="config-panel">
+                        <div class="config-tabs">
+                            <button class="tab active" data-tab="basic">基础配置</button>
+                            <button class="tab" data-tab="model">模型配置</button>
+                            <button class="tab" data-tab="data">数据配置</button>
+                            <button class="tab" data-tab="optim">优化器</button>
+                        </div>
+
+                        <div class="tab-panel active" id="panel-basic">
+                            <div class="form-group">
+                                <label>任务名称</label>
+                                <input type="text" class="form-input" id="task-name" placeholder="为训练任务起个名字">
+                            </div>
+                            <div class="form-group">
+                                <label>选择 GPU</label>
+                                <div class="gpu-grid" id="gpu-grid"></div>
+                            </div>
+                            <div class="form-group">
+                                <label>epochs</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="epochs" min="1" max="200" value="60">
+                                    <input type="number" class="slider-input" id="epochs-val" value="60">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>micro_batch_size_per_gpu</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="batch-size" min="1" max="8" value="1">
+                                    <input type="number" class="slider-input" id="batch-size-val" value="1">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>gradient_accumulation_steps</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="grad-accum" min="1" max="16" value="1">
+                                    <input type="number" class="slider-input" id="grad-accum-val" value="1">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>gradient_clipping</label>
+                                <input type="text" class="form-input mono" id="grad-clip" value="1.0">
+                            </div>
+                            <div class="form-group">
+                                <label>warmup_steps</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="warmup" min="0" max="100" value="20">
+                                    <input type="number" class="slider-input" id="warmup-val" value="20">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>save_every_n_epochs</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="save-epochs" min="1" max="50" value="5">
+                                    <input type="number" class="slider-input" id="save-epochs-val" value="5">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>checkpoint_every_n_epochs</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="ckpt-epochs" min="1" max="50" value="10">
+                                    <input type="number" class="slider-input" id="ckpt-epochs-val" value="10">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>video_clip_mode</label>
+                                <select class="form-select" id="clip-mode">
+                                    <option value="single_beginning" selected>single_beginning</option>
+                                    <option value="single_middle">single_middle</option>
+                                    <option value="multiple_overlapping">multiple_overlapping</option>
+                                </select>
+                            </div>
+                            
+                            <div class="section-divider">显存优化</div>
+                            <div class="form-group">
+                                <label>blocks_to_swap <span class="info-tip" title="将部分模型块交换到CPU以节省显存，值越大节省越多但速度越慢">?</span></label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="blocks-swap" min="0" max="64" value="0" step="4">
+                                    <input type="number" class="slider-input" id="blocks-swap-val" value="0">
+                                </div>
+                                <p class="form-hint">0=不交换（最快），32=交换一半，64=全部交换（最省显存）</p>
+                            </div>
+                            <div class="form-group">
+                                <label>activation_checkpointing 模式</label>
+                                <select class="form-select" id="act-ckpt-mode">
+                                    <option value="true" selected>标准 (true)</option>
+                                    <option value="unsloth">Unsloth (更省显存)</option>
+                                    <option value="false">关闭</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="tab-panel" id="panel-model">
+                            <div class="form-group">
+                                <label>model.type</label>
+                                <input type="text" class="form-input mono" value="wan" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label>model.ckpt_path</label>
+                                <input type="text" class="form-input mono small" value="/home/disk1/pretrained_models/Wan2.1-I2V-14B-480P" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label>model.dtype</label>
+                                <select class="form-select" id="model-dtype">
+                                    <option value="bfloat16" selected>bfloat16</option>
+                                    <option value="float16">float16</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>model.transformer_dtype</label>
+                                <select class="form-select" id="transformer-dtype">
+                                    <option value="float8" selected>float8</option>
+                                    <option value="bfloat16">bfloat16</option>
+                                </select>
+                            </div>
+                            <div class="section-divider">LoRA 配置</div>
+                            <div class="form-group">
+                                <label>adapter.rank</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="lora-rank" min="4" max="128" value="32" step="4">
+                                    <input type="number" class="slider-input" id="lora-rank-val" value="32">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>adapter.dtype</label>
+                                <select class="form-select" id="adapter-dtype">
+                                    <option value="bfloat16" selected>bfloat16</option>
+                                    <option value="float16">float16</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="tab-panel" id="panel-data">
+                            <div class="form-group">
+                                <label>resolutions</label>
+                                <select class="form-select" id="resolution">
+                                    <option value="480" selected>480</option>
+                                    <option value="720">720</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>enable_ar_bucket</label>
+                                <select class="form-select" id="ar-bucket">
+                                    <option value="true" selected>true</option>
+                                    <option value="false">false</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>ar_buckets (自动填充)</label>
+                                <input type="text" class="form-input mono" id="ar-buckets" value="" placeholder="根据视频宽高比自动填充">
+                            </div>
+                            <div class="form-group">
+                                <label>frame_buckets (4n+1)</label>
+                                <input type="text" class="form-input mono" id="frame-buckets" value="1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77, 81, 85, 89, 93, 97, 101, 105, 109, 113, 117, 121">
+                            </div>
+                            <div class="form-group">
+                                <label>num_repeats</label>
+                                <div class="slider-row">
+                                    <input type="range" class="slider" id="repeats" min="1" max="20" value="5">
+                                    <input type="number" class="slider-input" id="repeats-val" value="5">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="tab-panel" id="panel-optim">
+                            <div class="form-group">
+                                <label>optimizer.type</label>
+                                <select class="form-select" id="optimizer">
+                                    <option value="adamw_optimi" selected>adamw_optimi</option>
+                                    <option value="adamw8bit">adamw8bit</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>optimizer.lr</label>
+                                <input type="text" class="form-input mono" id="lr" value="5e-5">
+                            </div>
+                            <div class="form-group">
+                                <label>optimizer.betas</label>
+                                <input type="text" class="form-input mono" id="betas" value="0.9, 0.99">
+                            </div>
+                            <div class="form-group">
+                                <label>optimizer.weight_decay</label>
+                                <input type="text" class="form-input mono" id="weight-decay" value="0.01">
+                            </div>
+                        </div>
+
+                        <div class="config-footer">
+                            <button class="draft-btn" onclick="saveDraft()">保存草稿</button>
+                            <button class="start-btn" id="start-btn" onclick="startTraining()">开始训练</button>
+                        </div>
+                    </aside>
+                </div>
+            </div>
+
+            <!-- ====== 推理测试页 ====== -->
+            <div class="page" id="page-inference">
+                <header class="page-header">
+                    <h1 class="page-title">推理测试</h1>
+                    <div class="page-actions">
+                        <button class="btn-primary" onclick="refreshInferenceData()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                            </svg>
+                            刷新
+                        </button>
+                    </div>
+                </header>
+
+                <div class="inference-content">
+                    <!-- 左侧：配置区 -->
+                    <section class="inference-config">
+                        <div class="config-section">
+                            <h3>1. 选择训练任务</h3>
+                            <div class="task-select-list" id="task-select-list">
+                                <div class="empty-state"><p>加载中...</p></div>
+                            </div>
+                        </div>
+
+                        <div class="config-section" id="epoch-select-section" style="display:none;">
+                            <h3>2. 选择 LoRA 版本</h3>
+                            <div class="epoch-grid" id="epoch-grid">
+                                <!-- epochs will be rendered here -->
+                            </div>
+                            <div class="selected-loras" id="selected-loras" style="display:none;">
+                                <label>已选择:</label>
+                                <div class="selected-lora-tags" id="selected-lora-tags"></div>
+                            </div>
+                        </div>
+
+                        <div class="config-section">
+                            <h3>3. 测试图片</h3>
+                            <div class="test-image-area">
+                                <div class="image-preview" id="test-image-preview" onclick="openGalleryModal()">
+                                    <p>点击从图库选择或上传</p>
+                                </div>
+                                <div class="image-info" id="image-info" style="display:none;">
+                                    <span id="image-dimensions"></span>
+                                </div>
+                                <input type="file" id="upload-test-image" accept="image/*" style="display:none" onchange="handleTestImageUpload(this.files)">
+                            </div>
+                        </div>
+
+                        <div class="config-section">
+                            <h3>4. 推理参数</h3>
+                            <div class="form-group">
+                                <label>提示词</label>
+                                <textarea class="form-input" id="infer-prompt" rows="3" placeholder="描述要生成的动作，例如: a person dancing energetically"></textarea>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group half">
+                                    <label>宽度 <span class="auto-badge" id="width-auto">(自动)</span></label>
+                                    <input type="number" class="form-input" id="infer-width" value="832" step="16" readonly>
+                                </div>
+                                <div class="form-group half">
+                                    <label>高度 <span class="auto-badge" id="height-auto">(自动)</span></label>
+                                    <input type="number" class="form-input" id="infer-height" value="480" step="16" readonly>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group half">
+                                    <label>帧数</label>
+                                    <input type="number" class="form-input" id="infer-frames" value="81" step="4">
+                                </div>
+                                <div class="form-group half">
+                                    <label>采样步数</label>
+                                    <input type="number" class="form-input" id="infer-steps" value="30">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group half">
+                                    <label>引导系数</label>
+                                    <input type="number" class="form-input" id="infer-guidance" value="5.0" step="0.5">
+                                </div>
+                                <div class="form-group half">
+                                    <label>LoRA 强度</label>
+                                    <input type="number" class="form-input" id="infer-lora-strength" value="0.8" step="0.1" min="0" max="1">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group half">
+                                    <label>GPU</label>
+                                    <select class="form-select" id="infer-gpu">
+                                        <option value="0">GPU 0</option>
+                                    </select>
+                                </div>
+                                <div class="form-group half">
+                                    <label>Seed (-1随机)</label>
+                                    <input type="number" class="form-input" id="infer-seed" value="-1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="config-footer">
+                            <button class="start-btn" onclick="startInference()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                    <polygon points="5 3 19 12 5 21 5 3"/>
+                                </svg>
+                                开始推理
+                            </button>
+                        </div>
+                    </section>
+
+                    <!-- 右侧：结果区 -->
+                    <section class="inference-results">
+                        <h3>推理结果</h3>
+                        <div class="result-video" id="result-video-area">
+                            <div class="empty-state">
+                                <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" width="64" height="64">
+                                    <rect x="8" y="12" width="48" height="40" rx="4"/>
+                                    <polygon points="26 24 42 32 26 40"/>
+                                </svg>
+                                <p>推理结果将在此显示</p>
+                            </div>
+                        </div>
+
+                        <div class="inference-history">
+                            <h4>历史记录</h4>
+                            <div class="history-list" id="inference-history-list">
+                                <div class="empty-state small">
+                                    <p>暂无历史记录</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- ====== 图库管理页 ====== -->
+            <div class="page" id="page-gallery">
+                <header class="page-header">
+                    <h1 class="page-title">图库管理</h1>
+                    <div class="page-actions">
+                        <button class="btn-secondary" onclick="createGalleryFolder()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                            </svg>
+                            新建文件夹
+                        </button>
+                        <button class="btn-primary" onclick="uploadToGallery()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                            上传图片
+                        </button>
+                        <input type="file" id="gallery-upload-input" accept="image/*" multiple style="display:none" onchange="handleGalleryUpload(this.files)">
+                    </div>
+                </header>
+
+                <div class="gallery-content">
+                    <!-- 左侧：文件夹列表 -->
+                    <aside class="gallery-sidebar">
+                        <div class="folder-list" id="folder-list">
+                            <div class="folder-item active" data-folder="" onclick="selectGalleryFolder('')">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                                </svg>
+                                <span>全部图片</span>
+                            </div>
+                            <!-- folders will be rendered here -->
+                        </div>
+                    </aside>
+
+                    <!-- 右侧：图片网格 -->
+                    <section class="gallery-main">
+                        <div class="gallery-grid" id="gallery-grid">
+                            <div class="empty-state">
+                                <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" width="64" height="64">
+                                    <rect x="8" y="8" width="48" height="48" rx="4"/>
+                                    <circle cx="20" cy="20" r="4"/>
+                                    <polyline points="56 40 40 24 16 48"/>
+                                </svg>
+                                <p>暂无图片</p>
+                                <p class="hint">点击上方按钮上传图片</p>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <!-- 图库选择弹窗 -->
+    <div class="modal-overlay" id="gallery-modal" style="display:none;">
+        <div class="modal modal-xl">
+            <div class="modal-header">
+                <h3>选择测试图片</h3>
+                <span class="selected-count" id="selected-image-count"></span>
+                <button class="modal-close" onclick="closeGalleryModal()">×</button>
+            </div>
+            <div class="modal-body gallery-modal-body">
+                <div class="gallery-modal-sidebar">
+                    <div class="folder-list" id="modal-folder-list">
+                        <div class="folder-item active" data-folder="" onclick="selectModalFolder('')">
+                            <span>全部图片</span>
+                        </div>
+                    </div>
+                    <div class="upload-section">
+                        <button class="btn-secondary full-width" onclick="document.getElementById('modal-upload-input').click()">
+                            上传新图片
+                        </button>
+                        <input type="file" id="modal-upload-input" accept="image/*" multiple style="display:none" onchange="handleModalUpload(this.files)">
+                    </div>
+                </div>
+                <div class="gallery-modal-grid" id="modal-gallery-grid">
+                    <div class="empty-state"><p>加载中...</p></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="selection-hint">点击图片选择/取消，支持多选</span>
+                <button class="btn-secondary" onclick="closeGalleryModal()">取消</button>
+                <button class="btn-primary" onclick="confirmImageSelection()">确认选择</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 数据处理配置弹窗 -->
+    <div class="modal-overlay" id="process-modal" style="display:none;">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3>数据处理配置</h3>
+                <button class="modal-close" onclick="hideProcessModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="process-config-grid">
+                    <!-- 左侧：帧预览 -->
+                    <div class="frame-preview-section">
+                        <div class="frame-preview" id="frame-preview">
+                            <div class="frame-placeholder">
+                                <p>选择视频查看帧预览</p>
+                            </div>
+                        </div>
+                        <div class="frame-controls">
+                            <label>反推帧号</label>
+                            <div class="slider-row">
+                                <input type="range" class="slider" id="modal-frame-number" min="0" max="100" value="30" oninput="updateFramePreview()">
+                                <input type="number" class="slider-input" id="modal-frame-val" value="30" onchange="updateFramePreview()">
+                            </div>
+                            <p class="form-hint">拖动滑块实时预览该帧画面</p>
+                        </div>
+                        <div class="video-select">
+                            <label>预览视频</label>
+                            <select class="form-select" id="preview-video-select" onchange="loadVideoForPreview()">
+                                <option value="">选择一个视频预览</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- 右侧：配置选项 -->
+                    <div class="process-options">
+                        <div class="form-group">
+                            <label>触发词前缀</label>
+                            <input type="text" class="form-input" id="modal-trigger-word" placeholder="可选，如: A woman dancing">
+                            <p class="form-hint">会添加到每个生成的提示词前面</p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>提示词生成方式</label>
+                            <select class="form-select" id="modal-caption-method">
+                                <option value="qwen" selected>千问API生成（推荐）</option>
+                                <option value="prefix_only">仅使用触发词前缀</option>
+                            </select>
+                            <p class="form-hint">千问API会根据视频帧自动生成描述</p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>输出帧率</label>
+                            <select class="form-select" id="modal-fps">
+                                <option value="16" selected>16 fps</option>
+                                <option value="24">24 fps</option>
+                                <option value="30">30 fps</option>
+                            </select>
+                        </div>
+                        
+                        <div class="process-summary">
+                            <h4>处理预览</h4>
+                            <ul>
+                                <li>待处理视频: <b id="summary-video-count">0</b> 个</li>
+                                <li>输出目录: <code>/home/disk2/lora_training/datasets</code></li>
+                                <li>视频将被重命名为 1.mp4, 2.mp4...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="hideProcessModal()">取消</button>
+                <button class="btn-primary" id="modal-process-btn" onclick="confirmProcessing()">
+                    开始处理
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/js/app.js?v=19"></script>
+    <script>
+    // 确保函数全局可用
+    window.showProcessModal = showProcessModal;
+    window.hideProcessModal = hideProcessModal;
+    window.confirmProcessing = confirmProcessing;
+    window.loadVideoForPreview = loadVideoForPreview;
+    window.updateFramePreview = updateFramePreview;
+    window.showHomePage = showHomePage;
+    window.showTrainingPage = showTrainingPage;
+    window.switchDataTab = switchDataTab;
+    window.handleAddVideos = handleAddVideos;
+    window.selectGpu = selectGpu;
+    window.removeRawVideo = removeRawVideo;
+    window.saveCaption = saveCaption;
+    window.deleteProcessedVideo = deleteProcessedVideo;
+    window.markChanged = markChanged;
+    window.startTraining = startTraining;
+    window.saveDraft = saveDraft;
+    window.showTrainingStatus = showTrainingStatus;
+    window.hideTrainingStatus = hideTrainingStatus;
+    window.stopTraining = stopTraining;
+    window.viewTaskStatus = viewTaskStatus;
+    window.openTaskDetail = openTaskDetail;
+    window.startNewTraining = startNewTraining;
+    window.toggleTaskMenu = toggleTaskMenu;
+    window.copyTask = copyTask;
+    window.deleteTask = deleteTask;
+    
+    // 推理功能
+    window.navigateTo = navigateTo;
+    window.refreshInferenceData = refreshInferenceData;
+    window.selectLora = selectLora;
+    window.handleTestImageUpload = handleTestImageUpload;
+    window.startInference = startInference;
+    window.viewInferenceResult = viewInferenceResult;
+    window.selectTrainingTask = selectTrainingTask;
+    window.toggleEpochSelection = toggleEpochSelection;
+    window.openGalleryModal = openGalleryModal;
+    window.closeGalleryModal = closeGalleryModal;
+    window.confirmImageSelection = confirmImageSelection;
+    window.selectModalFolder = selectModalFolder;
+    window.handleModalUpload = handleModalUpload;
+    window.selectModalImage = selectModalImage;
+    
+    // 图库功能
+    window.createGalleryFolder = createGalleryFolder;
+    window.uploadToGallery = uploadToGallery;
+    window.handleGalleryUpload = handleGalleryUpload;
+    window.selectGalleryFolder = selectGalleryFolder;
+    window.deleteGalleryImage = deleteGalleryImage;
+    
+    // 调试：点击按钮时输出日志
+    document.addEventListener('DOMContentLoaded', function() {
+        var btn = document.getElementById('btn-process');
+        if (btn) {
+            console.log('Found btn-process, adding listener');
+            btn.addEventListener('click', function(e) {
+                console.log('btn-process clicked via addEventListener');
+                e.preventDefault();
+                showProcessModal();
+            });
+        } else {
+            console.error('btn-process not found!');
+        }
+    });
+    </script>
+</body>
+</html>

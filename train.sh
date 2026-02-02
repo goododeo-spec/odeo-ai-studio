@@ -1,0 +1,1 @@
+NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --config examples/wan_odeo.toml --resume_from_checkpoint

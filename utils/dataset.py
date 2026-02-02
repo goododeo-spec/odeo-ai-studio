@@ -680,13 +680,15 @@ class DirectoryDataset:
 
         metadata_map_fn = self._metadata_map_fn()
         print('Caching ungrouped metadata.')
+        # 确保 num_proc 不超过数据集大小，避免小数据集时的索引错误
+        actual_num_proc = min(NUM_PROC, len(metadata_dataset)) if len(metadata_dataset) > 0 else 1
         metadata_dataset = metadata_dataset.map(
             metadata_map_fn,
             cache_file_name=str(metadata_cache_file_2),
             load_from_cache_file=(not regenerate_cache and trust_cache),
             batched=True,
             batch_size=1,
-            num_proc=NUM_PROC,
+            num_proc=actual_num_proc,
             remove_columns=metadata_dataset.column_names,
         )
         return metadata_dataset

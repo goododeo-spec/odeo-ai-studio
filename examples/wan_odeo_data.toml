@@ -1,0 +1,33 @@
+
+resolutions = [480]
+
+enable_ar_bucket = true
+ 
+# w / h
+# ar_buckets = [
+# 0.562
+# ]
+
+# ar_buckets will be auto-filled based on video aspect ratios
+ar_buckets = [0.563]
+
+# frame_buckets: 4n+1 from 1 to 121
+frame_buckets = [1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77, 81, 85, 89, 93, 97, 101, 105, 109, 113, 117, 121]
+
+[[directory]]
+# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
+# A missing caption file will log a warning, but then just train using an empty caption.
+path = '/home/disk2/lora_training/datasets'
+# The dataset will act like it is duplicated this many times.
+num_repeats = 5
+# Example of overriding some settings, and using ar_buckets to directly specify ARs.
+# ar_buckets = [[448, 576]]
+# resolutions = [[448, 576]]
+# frame_buckets = [1]
+
+
+# You can list multiple directories.
+
+# [[directory]]
+# path = '/home/anon/data/images/something_else'
+# num_repeats = 5
