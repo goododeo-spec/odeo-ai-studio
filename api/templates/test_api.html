@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>API 测试页面</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #fff; }
+        .section { margin: 20px 0; padding: 15px; background: #2a2a2a; border-radius: 8px; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; background: #4a9eff; color: white; border: none; border-radius: 4px; }
+        button:hover { background: #3a8eef; }
+        pre { background: #333; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+        .success { color: #4ade80; }
+        .error { color: #f87171; }
+        #log { max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>API 测试页面</h1>
+    
+    <div class="section">
+        <h3>1. 测试训练列表 API</h3>
+        <button onclick="testListAPI()">测试 /training/list</button>
+    </div>
+    
+    <div class="section">
+        <h3>2. 测试创建训练任务 API</h3>
+        <button onclick="testCreateAPI()">测试 /training/start</button>
+    </div>
+    
+    <div class="section">
+        <h3>3. 模拟前端提交流程</h3>
+        <button onclick="simulateFrontendSubmit()">模拟前端提交</button>
+    </div>
+    
+    <div class="section">
+        <h3>日志输出</h3>
+        <button onclick="clearLog()">清空日志</button>
+        <pre id="log"></pre>
+    </div>
+
+    <script>
+        function log(msg, type = 'info') {
+            const logEl = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const className = type === 'success' ? 'success' : (type === 'error' ? 'error' : '');
+            logEl.innerHTML += `<span class="${className}">[${time}] ${msg}</span>\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        async function testListAPI() {
+            log('测试 /api/v1/training/list ...');
+            try {
+                const res = await fetch('/api/v1/training/list');
+                const data = await res.json();
+                log(`状态码: ${res.status}`, res.status === 200 ? 'success' : 'error');
+                log(`响应: ${JSON.stringify(data, null, 2)}`);
+            } catch (e) {
+                log(`错误: ${e.message}`, 'error');
+            }
+        }
+        
+        async function testCreateAPI() {
+            const taskId = `test_${Date.now()}`;
+            log(`测试 /api/v1/training/start, task_id=${taskId} ...`);
+            
+            try {
+                const res = await fetch('/api/v1/training/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task_id: taskId,
+                        gpu_id: -1,
+                        model_type: 'wan',
+                        description: 'API测试任务',
+                        dataset: {
+                            resolutions: [480],
+                            enable_ar_bucket: true,
+                            ar_buckets: [0.5, 0.75, 1.0],
+                            frame_buckets: [1, 29, 49],
+                            directory: [{ path: '/home/disk2/lora_training/datasets', num_repeats: 5 }]
+                        },
+                        config: {
+                            epochs: 60,
+                            save_every_n_epochs: 5
+                        },
+                        raw_videos: [],
+                        processed_videos: []
+                    })
+                });
+                
+                log(`状态码: ${res.status}`, res.status === 201 || res.status === 200 ? 'success' : 'error');
+                const data = await res.json();
+                log(`响应: ${JSON.stringify(data, null, 2)}`);
+                
+                if (data.code === 201 || data.code === 200) {
+                    log('✓ 任务创建成功！', 'success');
+                } else {
+                    log(`✗ 任务创建失败: ${data.message}`, 'error');
+                }
+            } catch (e) {
+                log(`错误: ${e.message}`, 'error');
+            }
+        }
+        
+        async function simulateFrontendSubmit() {
+            log('模拟前端提交流程...');
+            
+            // 模拟 State.processedVideos
+            const processedVideos = [{ filename: 'test.mp4', caption: 'test caption' }];
+            const rawVideos = [{ filename: 'test.mp4' }];
+            const taskId = `draft_${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 15)}`;
+            const taskName = `${new Date().toLocaleString().slice(5, 16).replace(/[\/\s:]/g, '')}_测试任务`;
+            
+            log(`任务ID: ${taskId}`);
+            log(`任务名称: ${taskName}`);
+            log(`处理后视频: ${JSON.stringify(processedVideos)}`);
+            
+            const taskData = {
+                task_id: taskId,
+                gpu_id: -1,
+                model_type: 'wan',
+                description: taskName,
+                dataset: {
+                    resolutions: [480],
+                    enable_ar_bucket: true,
+                    ar_buckets: [0.5, 0.75, 1.0],
+                    frame_buckets: [1, 29, 49, 81],
+                    directory: [{ path: '/home/disk2/lora_training/datasets', num_repeats: 5 }]
+                },
+                config: {
+                    epochs: 60,
+                    save_every_n_epochs: 5,
+                    micro_batch_size_per_gpu: 1,
+                    gradient_accumulation_steps: 1
+                },
+                raw_videos: rawVideos.map(v => v.filename),
+                processed_videos: processedVideos.map(v => ({ filename: v.filename, caption: v.caption }))
+            };
+            
+            log(`请求数据: ${JSON.stringify(taskData, null, 2)}`);
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 60000);
+                
+                const res = await fetch('/api/v1/training/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(taskData),
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                log(`HTTP 状态码: ${res.status}`, res.status === 201 || res.status === 200 ? 'success' : 'error');
+                
+                const result = await res.json();
+                log(`API 响应: ${JSON.stringify(result, null, 2)}`);
+                
+                if (result.code === 201 || result.code === 200) {
+                    log('✓ 模拟提交成功！', 'success');
+                } else {
+                    log(`✗ 模拟提交失败: ${result.message}`, 'error');
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    log('请求超时！', 'error');
+                } else {
+                    log(`错误: ${e.message}`, 'error');
+                }
+            }
+        }
+        
+        log('页面加载完成，点击按钮开始测试');
+    </script>
+</body>
+</html>

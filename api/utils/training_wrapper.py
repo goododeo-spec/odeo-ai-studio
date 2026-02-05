@@ -311,7 +311,8 @@ class TrainingWrapper:
                 f"--master_port={master_port}",
                 str(self.train_script),
                 "--deepspeed",
-                "--config", str(config_file)
+                "--config", str(config_file),
+                f"--master_port={master_port}"  # 同时传递给 train.py 确保分布式初始化使用正确端口
             ]
         else:
             # 回退到直接python运行

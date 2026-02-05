@@ -120,8 +120,11 @@ def start_training():
         }
     }
     """
+    import sys
+    print("[Route] start_training 收到请求", file=sys.stderr, flush=True)
     try:
         data = request.get_json()
+        print(f"[Route] 请求数据: task_id={data.get('task_id')}, gpu_id={data.get('gpu_id')}", file=sys.stderr, flush=True)
 
         # 验证必填参数
         if not data:
@@ -154,11 +157,13 @@ def start_training():
             model_type=model_type,
             description=data.get('description'),
             dataset=data.get('dataset'),
-            config=data.get('config')
+            config=data.get('config'),
+            raw_videos=data.get('raw_videos', []),
+            processed_videos=data.get('processed_videos', [])
         )
 
-        # 创建训练任务
-        response = training_service.create_training_task(request_obj)
+        # 创建训练任务，传递前端指定的 task_id（如果有）
+        response = training_service.create_training_task(request_obj, data.get('task_id'))
 
         # 转换为字典
         response_data = {
@@ -254,6 +259,42 @@ def stop_training(task_id):
         return jsonify(create_response(
             code=500,
             message=f"停止训练任务失败: {str(e)}",
+            data=None
+        )), 500
+
+@training_bp.route('/restart/<task_id>', methods=['POST'])
+def restart_training(task_id):
+    """
+    重新提交失败的训练任务
+    
+    会清除旧日志并重新开始训练
+    """
+    try:
+        response = training_service.restart_task(task_id)
+        
+        response_data = {
+            "task_id": response.task_id,
+            "status": response.status.value,
+            "gpu_id": response.gpu_id,
+            "gpu_name": response.gpu_name,
+            "queue_position": getattr(response, 'queue_position', 0)
+        }
+        
+        return jsonify(create_response(
+            code=200,
+            message="训练任务已重新提交",
+            data=response_data
+        ))
+    except ValueError as e:
+        return jsonify(create_response(
+            code=404,
+            message=str(e),
+            data=None
+        )), 404
+    except Exception as e:
+        return jsonify(create_response(
+            code=500,
+            message=f"重新提交失败: {str(e)}",
             data=None
         )), 500
 
@@ -462,7 +503,10 @@ def get_training(task_id):
             "updated_at": task.updated_at.isoformat() if task.updated_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "logs_path": task.logs_path,
-            "error_message": task.error_message
+            "error_message": task.error_message,
+            "dataset": task.dataset,
+            "raw_videos": getattr(task, 'raw_videos', []),
+            "processed_videos": getattr(task, 'processed_videos', [])
         }
 
         return jsonify(create_response(

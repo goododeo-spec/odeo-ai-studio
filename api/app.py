@@ -97,6 +97,12 @@ def create_app(config_name='default'):
     def index():
         """主页 - 训练管理控制台"""
         return render_template('index.html')
+    
+    # API 测试页面
+    @app.route('/test')
+    def test_page():
+        """API 测试页面"""
+        return render_template('test_api.html')
 
     # 处理前端路由（SPA 支持）
     @app.route('/<path:path>')

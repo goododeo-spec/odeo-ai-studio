@@ -11,7 +11,15 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
+
+# 尝试使用 gevent 进行异步任务处理
+try:
+    import gevent
+    from gevent.threadpool import ThreadPoolExecutor
+    HAS_GEVENT = True
+except ImportError:
+    from concurrent.futures import ThreadPoolExecutor
+    HAS_GEVENT = False
 
 from models.training import (
     TrainingTask, TrainingTaskRequest, TrainingTaskResponse, TrainingListResponse,
@@ -29,19 +37,90 @@ TASKS_FILE = TRAINING_OUTPUT_ROOT / "tasks.json"
 class TrainingService:
     """训练任务管理服务"""
 
+    # 训练用 GPU 范围 (GPU 0-3)
+    TRAINING_GPUS = [0, 1, 2, 3]
+
     def __init__(self):
         """初始化训练服务"""
         self._tasks: Dict[str, TrainingTask] = {}  # 训练任务映射
         self._task_locks: Dict[str, threading.Lock] = {}  # 任务锁
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=10)
+        self._queue_lock = threading.Lock()  # 队列锁
+        self._task_queue: List[str] = []  # 任务队列 (task_id 列表)
 
         # 确保输出目录存在
         TRAINING_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         
         # 加载已保存的任务
         self._load_tasks()
+        
+        # 启动队列处理线程
+        self._start_queue_processor()
     
+    def _start_queue_processor(self):
+        """启动队列处理线程"""
+        def process_queue():
+            while True:
+                try:
+                    time.sleep(30)  # 每30秒检查一次队列
+                    self._process_task_queue()
+                except Exception as e:
+                    print(f"[Queue] 队列处理异常: {e}")
+        
+        thread = threading.Thread(target=process_queue, daemon=True)
+        thread.start()
+        print("[Queue] 队列处理线程已启动")
+    
+    def _get_available_training_gpu(self) -> Optional[int]:
+        """获取可用的训练 GPU"""
+        try:
+            gpu_response = gpu_service.get_all_gpus()
+            print(f"[GPU] 检查可用GPU，共 {len(gpu_response.gpus)} 个GPU")
+            for gpu in gpu_response.gpus:
+                print(f"[GPU] GPU {gpu.gpu_id}: status={gpu.status.value}, free_mem={gpu.memory.free}MB")
+                # 检查是否在训练GPU范围内，且状态可用
+                if gpu.gpu_id in self.TRAINING_GPUS:
+                    if gpu.status.value == 'available':
+                        # 检查是否有足够的显存 (至少 10GB，降低门槛)
+                        if gpu.memory.free >= 10000:
+                            print(f"[GPU] 选择 GPU {gpu.gpu_id}")
+                            return gpu.gpu_id
+                        else:
+                            print(f"[GPU] GPU {gpu.gpu_id} 显存不足: {gpu.memory.free}MB < 10000MB")
+                    else:
+                        print(f"[GPU] GPU {gpu.gpu_id} 状态不可用: {gpu.status.value}")
+            print(f"[GPU] 没有找到可用的训练GPU")
+            return None
+        except Exception as e:
+            import traceback
+            print(f"[GPU] 获取可用 GPU 失败: {e}")
+            traceback.print_exc()
+            return None
+    
+    def _process_task_queue(self):
+        """处理任务队列"""
+        with self._queue_lock:
+            if not self._task_queue:
+                return
+            
+            # 获取可用 GPU
+            gpu_id = self._get_available_training_gpu()
+            if gpu_id is None:
+                return
+            
+            # 取出队首任务
+            task_id = self._task_queue.pop(0)
+            
+        # 启动任务
+        task = self._tasks.get(task_id)
+        if task and task.status == TrainingStatus.QUEUED:
+            print(f"[Queue] 队列任务 {task_id} 分配到 GPU {gpu_id}")
+            task.gpu_id = gpu_id
+            task.gpu_name = f"GPU {gpu_id}"
+            self._save_tasks()
+            self._executor.submit(self._start_training_task, task_id)
+
     def _load_tasks(self):
         """从文件加载任务列表"""
         if TASKS_FILE.exists():
@@ -65,6 +144,11 @@ class TrainingService:
                             completed_at=datetime.fromisoformat(task_data['completed_at']) if task_data.get('completed_at') else None,
                             logs_path=task_data.get('logs_path')
                         )
+                        # 加载草稿的额外数据
+                        if 'raw_videos' in task_data:
+                            task.raw_videos = task_data['raw_videos']
+                        if 'processed_videos' in task_data:
+                            task.processed_videos = task_data['processed_videos']
                         self._tasks[task.task_id] = task
                         self._task_locks[task.task_id] = threading.Lock()
                     except Exception as e:
@@ -121,7 +205,7 @@ class TrainingService:
         try:
             tasks_data = []
             for task in self._tasks.values():
-                tasks_data.append({
+                task_data = {
                     'task_id': task.task_id,
                     'status': task.status.value,
                     'gpu_id': task.gpu_id,
@@ -134,22 +218,45 @@ class TrainingService:
                     'started_at': task.started_at.isoformat() if task.started_at else None,
                     'completed_at': task.completed_at.isoformat() if task.completed_at else None,
                     'logs_path': task.logs_path
-                })
+                }
+                # 保存草稿的额外数据（原始视频、处理后视频）
+                if hasattr(task, 'raw_videos'):
+                    task_data['raw_videos'] = task.raw_videos
+                if hasattr(task, 'processed_videos'):
+                    task_data['processed_videos'] = task.processed_videos
+                tasks_data.append(task_data)
             with open(TASKS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(tasks_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存任务文件失败: {e}")
 
-    def create_training_task(self, request: TrainingTaskRequest) -> TrainingTaskResponse:
+    def create_training_task(self, request: TrainingTaskRequest, provided_task_id: str = None) -> TrainingTaskResponse:
         """创建训练任务（快速返回，不阻塞）"""
-        # 生成任务ID
-        task_id = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        import sys
+        print(f"[API] create_training_task 开始", file=sys.stderr, flush=True)
         
-        print(f"[API] 创建训练任务: {task_id}")
+        # 使用前端提供的 task_id 或生成新的
+        if provided_task_id:
+            task_id = provided_task_id
+        else:
+            task_id = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        
+        print(f"[API] 创建训练任务: {task_id}", file=sys.stderr, flush=True)
 
-        # 使用简单的GPU名称，不查询GPU服务
-        gpu_name = f"GPU {request.gpu_id}"
-
+        # GPU 自动分配
+        gpu_id = request.gpu_id
+        if gpu_id == -1:
+            # 自动分配可用GPU
+            gpu_id = self._get_available_training_gpu()
+            if gpu_id is not None:
+                print(f"[API] 自动分配 GPU {gpu_id}", file=sys.stderr, flush=True)
+            else:
+                # 没有可用GPU时，使用默认GPU 0 并加入队列
+                print(f"[API] 没有可用 GPU，使用默认 GPU 0 并直接启动", file=sys.stderr, flush=True)
+                gpu_id = 0  # 默认使用 GPU 0
+        
+        gpu_name = f"GPU {gpu_id}" if gpu_id is not None else "待分配"
+        
         # 创建训练配置
         output_dir = TRAINING_OUTPUT_ROOT / task_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +268,7 @@ class TrainingService:
         task = TrainingTask(
             task_id=task_id,
             status=TrainingStatus.QUEUED,
-            gpu_id=request.gpu_id,
+            gpu_id=gpu_id if gpu_id is not None else -1,
             gpu_name=gpu_name,
             model_type=request.model_type,
             description=request.description,
@@ -177,6 +284,10 @@ class TrainingService:
                 overall_progress=0
             )
         )
+        
+        # 保存原始视频和处理后视频数据
+        task.raw_videos = request.raw_videos or []
+        task.processed_videos = request.processed_videos or []
 
         # 保存任务
         self._tasks[task_id] = task
@@ -185,11 +296,30 @@ class TrainingService:
         # 保存任务到文件
         self._save_tasks()
 
-        print(f"[API] 任务 {task_id} 已创建，状态: QUEUED")
+        print(f"[API] 任务 {task_id} 已创建，状态: QUEUED", file=sys.stderr, flush=True)
 
-        # 异步启动训练（不阻塞API响应）
-        self._executor.submit(self._start_training_task, task_id)
+        # 如果有可用 GPU，立即启动训练；否则加入队列
+        if gpu_id is not None:
+            try:
+                print(f"[API] 提交异步训练任务...", file=sys.stderr, flush=True)
+                # 使用 gevent.spawn 如果可用，否则使用 ThreadPoolExecutor
+                if HAS_GEVENT:
+                    gevent.spawn(self._start_training_task, task_id)
+                else:
+                    self._executor.submit(self._start_training_task, task_id)
+                print(f"[API] 异步任务已提交", file=sys.stderr, flush=True)
+            except Exception as e:
+                import traceback
+                print(f"[API] 提交异步任务失败: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc()
+        else:
+            # 加入队列
+            with self._queue_lock:
+                self._task_queue.append(task_id)
+            print(f"[API] 任务 {task_id} 已加入队列，当前队列长度: {len(self._task_queue)}")
 
+        print(f"[API] 准备返回响应...", file=sys.stderr, flush=True)
+        
         # 立即返回响应
         return TrainingTaskResponse(
             task_id=task_id,
@@ -207,8 +337,10 @@ class TrainingService:
 
     def save_draft(self, data: dict) -> TrainingTaskResponse:
         """保存训练草稿（不启动训练）"""
-        # 生成草稿ID
-        task_id = f"draft_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        # 使用前端传递的 task_id（如果有），否则生成新的
+        task_id = data.get('task_id')
+        if not task_id:
+            task_id = f"draft_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
         
         print(f"[API] 保存草稿: {task_id}")
 
@@ -330,6 +462,61 @@ class TrainingService:
         
         self._save_tasks()
         print(f"[API] 任务 {task_id} 已删除")
+
+    def restart_task(self, task_id: str) -> TrainingTaskResponse:
+        """重新提交失败的任务"""
+        task = self._tasks.get(task_id)
+        if not task:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        # 只有失败或停止的任务可以重新提交
+        if task.status not in [TrainingStatus.FAILED, TrainingStatus.STOPPED]:
+            raise ValueError(f"只有失败或停止的任务可以重新提交")
+        
+        print(f"[API] 重新提交任务 {task_id}")
+        
+        # 清除旧日志
+        if task.logs_path:
+            try:
+                log_path = Path(task.logs_path)
+                if log_path.exists():
+                    import os
+                    os.remove(log_path)
+                    print(f"[API] 已清除旧日志: {log_path}")
+            except Exception as e:
+                print(f"[API] 清除日志失败: {e}")
+        
+        # 重置任务状态
+        task.status = TrainingStatus.QUEUED
+        task.error_message = None
+        task.started_at = None
+        task.completed_at = None
+        task.progress = None
+        task.metrics = {}
+        
+        # 重新分配 GPU (简单分配第一个可用的)
+        task.gpu_id = 0
+        task.gpu_name = "GPU 0"
+        
+        self._save_tasks()
+        
+        # 启动训练
+        self._executor.submit(self._start_training_task, task_id)
+        
+        return TrainingTaskResponse(
+            task_id=task_id,
+            status=task.status,
+            gpu_id=task.gpu_id,
+            gpu_name=task.gpu_name,
+            model_type=task.model_type,
+            config=task.config,
+            description=task.description,
+            created_at=task.created_at,
+            queue_position=0,
+            estimated_start_time=None,
+            estimated_duration=None,
+            checkpoints={}
+        )
 
     def _start_training_task(self, task_id: str):
         """启动训练任务（在后台线程中执行）"""

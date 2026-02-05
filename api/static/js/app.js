@@ -23,8 +23,261 @@ const State = {
     isProcessing: false,
     isUploading: false,
     previewVideo: null,
-    lossHistory: [] // 用于 loss 曲线
+    lossHistory: [], // 用于 loss 曲线
+    isDirty: false,  // 是否有未保存的更改
+    isNewTask: false // 是否是新建任务
 };
+
+// 生成任务ID
+function generateTaskId() {
+    const now = new Date();
+    const timestamp = now.getFullYear().toString() +
+        String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') + '_' +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0');
+    return `draft_${timestamp}`;
+}
+
+// 生成带时间前缀的任务名称
+function generateTaskName() {
+    const now = new Date();
+    const prefix = String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') + '_' +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0');
+    return prefix + '_';
+}
+
+// 标记有未保存的更改
+function markDirty() {
+    State.isDirty = true;
+}
+
+// 清除脏标记
+function clearDirty() {
+    State.isDirty = false;
+}
+
+// ============================================
+// 状态持久化
+// ============================================
+const STORAGE_KEY = 'odeo_app_state';
+
+function saveAppState() {
+    try {
+        const state = {
+            // 页面状态
+            currentPage: State.currentPage,
+            currentDataTab: State.currentDataTab,
+            currentTaskId: State.currentTaskId,
+            
+            // 推理页面状态
+            inferState: {
+                selectedTask: InferState?.selectedTask || null,
+                selectedLoras: InferState?.selectedLoras || [],
+                testImages: InferState?.testImages || [],
+                testImagePath: InferState?.testImagePath || null,
+                testImageUrl: InferState?.testImageUrl || null,
+                testImageWidth: InferState?.testImageWidth || 0,
+                testImageHeight: InferState?.testImageHeight || 0,
+                currentGalleryFolder: InferState?.currentGalleryFolder || ''
+            },
+            
+            // 推理参数表单
+            inferParams: {
+                prompt: document.getElementById('infer-prompt')?.value || '',
+                loraStrength: document.getElementById('infer-lora-strength')?.value || '1',
+                width: document.getElementById('infer-width')?.value || '832',
+                height: document.getElementById('infer-height')?.value || '480',
+                frames: document.getElementById('infer-frames')?.value || '81',
+                steps: document.getElementById('infer-steps')?.value || '4',
+                guidance: document.getElementById('infer-guidance')?.value || '1',
+                seed: document.getElementById('infer-seed')?.value || '-1',
+                autoCaption: document.getElementById('infer-auto-caption')?.checked ?? true
+            },
+            
+            // 训练页面配置 tabs
+            configTab: document.querySelector('.config-panel .tab.active')?.dataset?.tab || 'basic',
+            
+            // 保存时间戳
+            savedAt: Date.now()
+        };
+        
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+        console.warn('保存状态失败:', e);
+    }
+}
+
+function loadSavedState() {
+    try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+            return JSON.parse(saved);
+        }
+    } catch (e) {
+        console.warn('加载状态失败:', e);
+    }
+    return null;
+}
+
+async function restoreAppState() {
+    const saved = loadSavedState();
+    if (!saved) {
+        // 没有保存的状态，使用默认页面
+        showHomePage();
+        return;
+    }
+    
+    // 恢复页面状态
+    State.currentPage = saved.currentPage || 'home';
+    State.currentDataTab = saved.currentDataTab || 'raw';
+    State.currentTaskId = saved.currentTaskId || null;
+    
+    // 恢复推理状态（InferState 可能还未定义，在后面恢复）
+    if (saved.inferState && typeof InferState !== 'undefined') {
+        Object.assign(InferState, saved.inferState);
+    }
+    
+    // 根据保存的页面类型恢复
+    const page = saved.currentPage;
+    
+    if (page === 'training') {
+        // 训练页面（旧的两页面结构）
+        showTrainingPage();
+    } else if (page === 'home') {
+        showHomePage();
+    } else if (page === 'inference' || page === 'gallery') {
+        // 新的导航结构
+        await navigateTo(page);
+        
+        // 恢复推理参数
+        if (page === 'inference' && saved.inferParams) {
+            restoreInferParams(saved.inferParams);
+        }
+        
+        // 恢复推理页面选中状态
+        if (page === 'inference' && saved.inferState) {
+            await restoreInferenceState(saved.inferState);
+        }
+    } else {
+        // 默认回到主页
+        showHomePage();
+    }
+    
+    // 恢复 config tab
+    if (saved.configTab) {
+        setTimeout(() => {
+            const tab = document.querySelector(`.config-panel .tab[data-tab="${saved.configTab}"]`);
+            if (tab) tab.click();
+        }, 100);
+    }
+}
+
+function restoreInferParams(params) {
+    if (params.prompt && document.getElementById('infer-prompt')) {
+        document.getElementById('infer-prompt').value = params.prompt;
+    }
+    if (params.loraStrength && document.getElementById('infer-lora-strength')) {
+        document.getElementById('infer-lora-strength').value = params.loraStrength;
+    }
+    if (params.width && document.getElementById('infer-width')) {
+        document.getElementById('infer-width').value = params.width;
+    }
+    if (params.height && document.getElementById('infer-height')) {
+        document.getElementById('infer-height').value = params.height;
+    }
+    if (params.frames && document.getElementById('infer-frames')) {
+        document.getElementById('infer-frames').value = params.frames;
+    }
+    if (params.steps && document.getElementById('infer-steps')) {
+        document.getElementById('infer-steps').value = params.steps;
+    }
+    if (params.guidance && document.getElementById('infer-guidance')) {
+        document.getElementById('infer-guidance').value = params.guidance;
+    }
+    if (params.seed && document.getElementById('infer-seed')) {
+        document.getElementById('infer-seed').value = params.seed;
+    }
+    if (typeof params.autoCaption === 'boolean' && document.getElementById('infer-auto-caption')) {
+        document.getElementById('infer-auto-caption').checked = params.autoCaption;
+    }
+}
+
+async function restoreInferenceState(inferState) {
+    // 恢复 InferState
+    if (inferState.selectedTask) {
+        InferState.selectedTask = inferState.selectedTask;
+    }
+    if (inferState.selectedLoras) {
+        InferState.selectedLoras = inferState.selectedLoras;
+    }
+    if (inferState.testImages) {
+        InferState.testImages = inferState.testImages;
+    }
+    if (inferState.testImagePath) {
+        InferState.testImagePath = inferState.testImagePath;
+    }
+    if (inferState.testImageUrl) {
+        InferState.testImageUrl = inferState.testImageUrl;
+    }
+    InferState.testImageWidth = inferState.testImageWidth || 0;
+    InferState.testImageHeight = inferState.testImageHeight || 0;
+    InferState.currentGalleryFolder = inferState.currentGalleryFolder || '';
+    
+    // 等待数据加载完成后恢复 UI 选中状态
+    setTimeout(() => {
+        // 恢复选中的训练任务
+        if (InferState.selectedTask) {
+            const taskEl = document.querySelector(`.task-select-item[onclick*="${InferState.selectedTask}"]`);
+            if (taskEl) {
+                taskEl.classList.add('selected');
+                // 显示 epoch 选择区并选中 epochs
+                const epochSection = document.getElementById('epoch-select-section');
+                if (epochSection) epochSection.style.display = 'block';
+                
+                const task = InferState.trainingTasks?.find(t => t.task_id === InferState.selectedTask);
+                if (task) {
+                    renderEpochGrid(task.epochs);
+                }
+            }
+        }
+        
+        // 恢复图片预览
+        if (InferState.testImages && InferState.testImages.length > 0) {
+            const preview = document.getElementById('test-image-preview');
+            if (preview) {
+                preview.innerHTML = `
+                    <div class="test-images-grid">
+                        ${InferState.testImages.map(img => 
+                            `<img src="${img.url}" alt="" loading="lazy">`
+                        ).join('')}
+                    </div>
+                `;
+            }
+        }
+    }, 500);
+}
+
+// 自动保存状态（在关键操作时）
+function autoSaveState() {
+    // 延迟保存，避免频繁写入
+    clearTimeout(window._saveStateTimer);
+    window._saveStateTimer = setTimeout(saveAppState, 300);
+}
+
+// 监听页面关闭前保存状态并提示未保存
+window.addEventListener('beforeunload', (e) => {
+    saveAppState();
+    // 如果有未保存的新任务更改，提示用户
+    if (State.isDirty && State.isNewTask) {
+        e.preventDefault();
+        e.returnValue = '您有未保存的任务数据，确定要离开吗？';
+        return e.returnValue;
+    }
+});
 
 // ============================================
 // API
@@ -50,27 +303,41 @@ const API = {
     getTask: (id) => API.request(`/training/${id}`),
     createTask: async (data) => {
         try {
+            console.log('[API] createTask 开始提交', data);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+            
             const res = await fetch('/api/v1/training/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
+                body: JSON.stringify(data),
+                signal: controller.signal
             });
-            return await res.json();
+            
+            clearTimeout(timeoutId);
+            console.log('[API] createTask 响应状态:', res.status);
+            const result = await res.json();
+            console.log('[API] createTask 响应数据:', result);
+            return result;
         } catch (e) {
-            console.error('createTask error:', e);
+            console.error('[API] createTask error:', e);
+            if (e.name === 'AbortError') {
+                return { code: 500, message: '请求超时，请检查服务是否正常运行' };
+            }
             return { code: 500, message: e.message };
         }
     },
-    getRawVideos: () => API.request('/preprocess/raw'),
+    getRawVideos: (taskId) => API.request(`/preprocess/raw${taskId ? '?task_id=' + taskId : ''}`),
     processVideos: (data) => API.request('/preprocess/videos', { method: 'POST', body: JSON.stringify(data) }),
-    getProcessedVideos: () => API.request('/preprocess/list'),
-    getArBuckets: () => API.request('/preprocess/ar-buckets'),
+    getProcessedVideos: (taskId) => API.request(`/preprocess/list${taskId ? '?task_id=' + taskId : ''}`),
+    getArBuckets: (taskId) => API.request(`/preprocess/ar-buckets${taskId ? '?task_id=' + taskId : ''}`),
     updateCaption: (data) => API.request('/preprocess/caption', { method: 'PUT', body: JSON.stringify(data) }),
-    deleteVideo: (filename) => API.request(`/preprocess/video/${filename}`, { method: 'DELETE' }),
-    deleteRawVideo: (filename) => API.request(`/preprocess/raw/${filename}`, { method: 'DELETE' }),
-    getFrame: (filename, frameNumber) => `/api/v1/preprocess/frame/${encodeURIComponent(filename)}?frame=${frameNumber}`,
+    deleteVideo: (filename, taskId) => API.request(`/preprocess/video/${filename}${taskId ? '?task_id=' + taskId : ''}`, { method: 'DELETE' }),
+    deleteRawVideo: (filename, taskId) => API.request(`/preprocess/raw/${filename}${taskId ? '?task_id=' + taskId : ''}`, { method: 'DELETE' }),
+    getFrame: (filename, frameNumber, taskId) => `/api/v1/preprocess/frame/${encodeURIComponent(filename)}?frame=${frameNumber}${taskId ? '&task_id=' + taskId : ''}`,
     saveDraft: (data) => API.request('/training/draft', { method: 'POST', body: JSON.stringify(data) }),
-    copyTask: (taskId, newName) => API.request('/training/copy', { method: 'POST', body: JSON.stringify({ task_id: taskId, new_name: newName }) })
+    copyTask: (taskId, newName) => API.request('/training/copy', { method: 'POST', body: JSON.stringify({ task_id: taskId, new_name: newName }) }),
+    restartTask: (taskId) => API.request(`/training/restart/${taskId}`, { method: 'POST' })
 };
 
 // Frame buckets: 4n+1 from 1 to 121
@@ -101,7 +368,7 @@ const DEFAULT_CONFIG = {
     ar_bucket: 'true',
     repeats: 5,
     optimizer: 'adamw_optimi',
-    lr: '5e-5',
+    lr: '8e-5',
     betas: '0.9, 0.99',
     weight_decay: '0.01'
 };
@@ -225,12 +492,25 @@ function toast(msg, type = 'info') {
 // ============================================
 // Page Navigation
 // ============================================
-function showHomePage() {
+function showHomePage(skipConfirm = false) {
+    // 检查是否有未保存的更改
+    if (!skipConfirm && State.isDirty && State.isNewTask) {
+        if (!confirm('当前任务有未保存的更改，确定要返回主页吗？未保存的数据将丢失。')) {
+            return;
+        }
+    }
+    
+    // 清除新任务状态
+    State.isDirty = false;
+    State.isNewTask = false;
+    State.currentTaskId = null;
+    
     document.getElementById('page-home').classList.add('active');
     document.getElementById('page-training').classList.remove('active');
     State.currentPage = 'home';
     localStorage.setItem('currentPage', 'home');
     loadTasks();
+    autoSaveState();
 }
 
 function showTrainingPage() {
@@ -240,28 +520,34 @@ function showTrainingPage() {
     localStorage.setItem('currentPage', 'training');
     loadGpus();
     
-    // 如果是编辑已有任务，加载任务数据
-    if (State.currentTaskId) {
+    // 如果是新建任务
+    if (State.isNewTask) {
+        // 新建任务：加载上次配置，设置任务名称，清空视频
+        applyConfigToForm(loadLastConfig());
+        document.getElementById('task-name').value = generateTaskName();
+        // 清空视频状态
+        State.rawVideos = [];
+        State.processedVideos = [];
+        updateRawVideoDisplay();
+        updateProcessedDisplay();
+    } else if (State.currentTaskId) {
+        // 编辑已有任务：加载任务数据
         loadTaskData(State.currentTaskId);
     } else {
-        // 新建任务：加载上次配置，但清空视频和名称
+        // 其他情况：加载上次配置
         applyConfigToForm(loadLastConfig());
         document.getElementById('task-name').value = '';
-        // 不加载视频，显示空状态
         State.rawVideos = [];
         State.processedVideos = [];
         updateRawVideoDisplay();
         updateProcessedDisplay();
     }
+    autoSaveState();
 }
 
 function restorePage() {
-    const saved = localStorage.getItem('currentPage');
-    if (saved === 'training' && State.currentTaskId) {
-        showTrainingPage();
-    } else {
-        showHomePage();
-    }
+    // 使用新的状态恢复系统
+    restoreAppState();
 }
 
 // ============================================
@@ -371,6 +657,8 @@ async function deleteTask(taskId) {
 // 打开任务详情
 function openTaskDetail(taskId) {
     State.currentTaskId = taskId;
+    State.isNewTask = false;  // 明确标记这不是新任务
+    State.isDirty = false;    // 初始化为无修改状态
     showTrainingPage();
 }
 
@@ -420,12 +708,24 @@ async function loadTaskData(taskId) {
 
 // 新建任务
 function startNewTraining() {
+    // 检查是否有未保存的更改
+    if (State.isDirty && State.isNewTask) {
+        if (!confirm('当前任务有未保存的更改，确定要放弃并新建任务吗？')) {
+            return;
+        }
+    }
+    
     console.log('startNewTraining called');
-    State.currentTaskId = null;
+    // 生成新的任务ID
+    State.currentTaskId = generateTaskId();
     State.rawVideos = [];
     State.processedVideos = [];
     State.selectedGpu = null;
     State.lossHistory = [];
+    State.isDirty = false;
+    State.isNewTask = true;
+    
+    // showTrainingPage 会检测 isNewTask 并正确初始化
     showTrainingPage();
 }
 window.startNewTraining = startNewTraining;
@@ -516,7 +816,7 @@ function renderGpuIndicators() {
 // Raw Videos
 // ============================================
 async function loadRawVideos() {
-    const res = await API.getRawVideos();
+    const res = await API.getRawVideos(State.currentTaskId);
     State.rawVideos = res.data?.videos || [];
     updateRawVideoDisplay();
 }
@@ -543,9 +843,10 @@ function updateRawVideoDisplay() {
 function renderRawVideos() {
     const grid = document.getElementById('raw-video-grid');
     if (!grid) return;
+    const taskParam = State.currentTaskId ? `?task_id=${State.currentTaskId}` : '';
     grid.innerHTML = State.rawVideos.map(v => `
         <div class="raw-video-item">
-            <video src="/api/v1/preprocess/raw/file/${encodeURIComponent(v.filename)}" 
+            <video src="/api/v1/preprocess/raw/file/${encodeURIComponent(v.filename)}${taskParam}" 
                    muted loop onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;">
             </video>
             <div class="name">${v.filename}</div>
@@ -556,9 +857,10 @@ function renderRawVideos() {
 
 async function removeRawVideo(filename) {
     if (!confirm(`删除 ${filename}？`)) return;
-    const res = await API.deleteRawVideo(filename);
+    const res = await API.deleteRawVideo(filename, State.currentTaskId);
     if (res.code === 200) {
         toast('已删除', 'success');
+        markDirty();
         loadRawVideos();
     } else {
         toast(`删除失败: ${res.message}`, 'error');
@@ -576,6 +878,11 @@ async function handleAddVideos(files) {
         }
     }
     
+    // 添加 task_id
+    if (State.currentTaskId) {
+        formData.append('task_id', State.currentTaskId);
+    }
+    
     const count = formData.getAll('files').length;
     if (count === 0) {
         toast('请选择视频文件', 'warning');
@@ -590,6 +897,7 @@ async function handleAddVideos(files) {
         const data = await res.json();
         if (data.code === 200) {
             toast(`已添加 ${data.data.count} 个视频`, 'success');
+            markDirty();
             await loadRawVideos();
         } else {
             throw new Error(data.message);
@@ -631,18 +939,33 @@ function showProcessModal() {
     }
     
     const modal = document.getElementById('process-modal');
-    const select = document.getElementById('preview-video-select');
     const summaryCount = document.getElementById('summary-video-count');
-    const framePreview = document.getElementById('frame-preview');
+    const videoGrid = document.getElementById('process-video-grid');
     
     if (!modal) return;
     
-    if (select) {
-        select.innerHTML = '<option value="">选择一个视频预览</option>' +
-            State.rawVideos.map(v => `<option value="${v.filename}">${v.filename}</option>`).join('');
+    // 同步触发词：从主界面输入框读取并填入模态框
+    const mainTriggerWord = document.getElementById('trigger-word')?.value || '';
+    const modalTriggerWord = document.getElementById('modal-trigger-word');
+    if (modalTriggerWord && mainTriggerWord) {
+        modalTriggerWord.value = mainTriggerWord;
     }
+    
+    // 更新视频数量
     if (summaryCount) summaryCount.textContent = State.rawVideos.length;
-    if (framePreview) framePreview.innerHTML = '<div class="frame-placeholder"><p>选择视频查看帧预览</p></div>';
+    
+    // 渲染所有视频缩略图
+    if (videoGrid) {
+        const taskParam = State.currentTaskId ? `?task_id=${State.currentTaskId}` : '';
+        videoGrid.innerHTML = State.rawVideos.map(v => `
+            <div class="process-video-item">
+                <video src="/api/v1/preprocess/raw/file/${encodeURIComponent(v.filename)}${taskParam}" 
+                       muted loop onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;">
+                </video>
+                <div class="video-name">${v.filename}</div>
+            </div>
+        `).join('');
+    }
     
     modal.style.display = 'flex';
 }
@@ -650,45 +973,23 @@ function showProcessModal() {
 function hideProcessModal() {
     const modal = document.getElementById('process-modal');
     if (modal) modal.style.display = 'none';
-}
-
-function loadVideoForPreview() {
-    const select = document.getElementById('preview-video-select');
-    const filename = select ? select.value : '';
     
-    if (!filename) {
-        const framePreview = document.getElementById('frame-preview');
-        if (framePreview) framePreview.innerHTML = '<div class="frame-placeholder"><p>选择视频查看帧预览</p></div>';
-        State.previewVideo = null;
-        return;
-    }
-    
-    State.previewVideo = filename;
-    updateFramePreview();
-}
-
-function updateFramePreview() {
-    if (!State.previewVideo) return;
-    
-    const slider = document.getElementById('modal-frame-number');
-    const input = document.getElementById('modal-frame-val');
-    const previewDiv = document.getElementById('frame-preview');
-    
-    const frameNumber = slider ? slider.value : 30;
-    if (input) input.value = frameNumber;
-    
-    if (previewDiv) {
-        const imgUrl = API.getFrame(State.previewVideo, frameNumber);
-        previewDiv.innerHTML = `<img src="${imgUrl}" alt="帧 ${frameNumber}" onerror="this.parentElement.innerHTML='<div class=frame-placeholder><p>无法加载帧</p></div>'">`;
+    // 同步触发词回主界面
+    const modalTriggerWord = document.getElementById('modal-trigger-word')?.value || '';
+    const mainTriggerWord = document.getElementById('trigger-word');
+    if (mainTriggerWord && modalTriggerWord) {
+        mainTriggerWord.value = modalTriggerWord;
     }
 }
+
+// 保留函数以兼容旧代码
+function loadVideoForPreview() {}
+function updateFramePreview() {}
 
 async function confirmProcessing() {
     if (State.isProcessing) return;
     
     const triggerWord = document.getElementById('modal-trigger-word')?.value || '';
-    const captionMethod = document.getElementById('modal-caption-method')?.value || 'qwen';
-    const frameNumber = parseInt(document.getElementById('modal-frame-val')?.value || 30);
     const fps = parseInt(document.getElementById('modal-fps')?.value || 16);
     
     hideProcessModal();
@@ -697,18 +998,18 @@ async function confirmProcessing() {
     
     try {
         const res = await API.processVideos({
+            task_id: State.currentTaskId,
             input_dir: CONFIG.rawPath,
             output_dir: CONFIG.datasetPath,
             prompt_prefix: triggerWord,
-            caption_method: captionMethod,
-            frame_number: frameNumber,
             fps: fps,
-            use_qwen: captionMethod === 'qwen'
+            use_qwen_vl: true
         });
         
         if (res.code === 200 || res.code === 201) {
             hideProcessStatus();
             toast(`处理完成！${res.data?.processed?.length || 0} 个视频`, 'success');
+            markDirty();
             await loadProcessedVideos();
             switchDataTab('processed');
         } else {
@@ -744,7 +1045,7 @@ function hideProcessStatus() {
 // Processed Videos
 // ============================================
 async function loadProcessedVideos() {
-    const res = await API.getProcessedVideos();
+    const res = await API.getProcessedVideos(State.currentTaskId);
     State.processedVideos = res.data?.videos || [];
     updateProcessedDisplay();
     loadArBuckets();
@@ -752,7 +1053,7 @@ async function loadProcessedVideos() {
 
 async function loadArBuckets() {
     try {
-        const res = await API.getArBuckets();
+        const res = await API.getArBuckets(State.currentTaskId);
         if (res.code === 200 && res.data?.ar_buckets?.length > 0) {
             const arInput = document.getElementById('ar-buckets');
             if (arInput) arInput.value = res.data.ar_buckets.join(', ');
@@ -779,10 +1080,11 @@ function updateProcessedDisplay() {
 function renderProcessedVideos() {
     const list = document.getElementById('processed-list');
     if (!list) return;
+    const taskParam = State.currentTaskId ? `?task_id=${State.currentTaskId}` : '';
     list.innerHTML = State.processedVideos.map((v, i) => `
         <div class="processed-card" data-id="${i}">
             <div class="card-video">
-                <video src="/api/v1/preprocess/video/${v.filename}" muted loop onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
+                <video src="/api/v1/preprocess/video/${v.filename}${taskParam}" muted loop onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
                 <div class="card-filename">${v.filename}</div>
             </div>
             <div class="card-caption">
@@ -809,9 +1111,10 @@ async function saveCaption(id, filename) {
     const textarea = document.getElementById(`caption-${id}`);
     if (!textarea) return;
     try {
-        const res = await API.updateCaption({ filename, caption: textarea.value });
+        const res = await API.updateCaption({ filename, caption: textarea.value, task_id: State.currentTaskId });
         if (res.code === 200) {
             toast('已保存', 'success');
+            markDirty();
             const item = document.querySelector(`.processed-card[data-id="${id}"]`);
             if (item) item.classList.remove('changed');
         } else {
@@ -825,9 +1128,10 @@ async function saveCaption(id, filename) {
 async function deleteProcessedVideo(filename) {
     if (!confirm(`删除 ${filename}？`)) return;
     try {
-        const res = await API.deleteVideo(filename);
+        const res = await API.deleteVideo(filename, State.currentTaskId);
         if (res.code === 200) {
             toast('已删除', 'success');
+            markDirty();
             loadProcessedVideos();
         } else {
             throw new Error(res.message);
@@ -886,30 +1190,34 @@ function getFormValues() {
 }
 
 async function startTraining() {
+    console.log('[startTraining] 函数被调用');
+    console.log('[startTraining] State.processedVideos:', State.processedVideos);
+    console.log('[startTraining] State.processedVideos.length:', State.processedVideos.length);
+    
     if (State.processedVideos.length === 0) {
+        console.log('[startTraining] 没有处理后的视频，显示警告');
         toast('请先处理训练数据', 'warning');
         switchDataTab('processed');
         return;
     }
-    if (State.selectedGpu === null) {
-        toast('请选择GPU', 'warning');
-        return;
-    }
     let name = document.getElementById('task-name')?.value?.trim();
+    console.log('[startTraining] 任务名称:', name);
     if (!name) {
+        console.log('[startTraining] 任务名称为空，显示警告');
         toast('请输入任务名称', 'warning');
         document.getElementById('task-name')?.focus();
         return;
     }
     
-    // 自动添加日期前缀（如果没有的话）
-    if (!/^\d{6}_\d{4}_/.test(name)) {
-        name = generateDatePrefix() + name;
-        document.getElementById('task-name').value = name;
-    }
-    
     const btn = document.getElementById('start-btn');
-    if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
+    const resetBtn = () => {
+        console.log('[startTraining] 重置按钮状态');
+        if (btn) { btn.disabled = false; btn.textContent = '提交训练'; }
+    };
+    
+    if (btn) { btn.disabled = true; btn.textContent = '提交中...'; }
+    
+    console.log('[startTraining] 开始提交训练任务...');
     
     try {
         const formValues = getFormValues();
@@ -917,8 +1225,9 @@ async function startTraining() {
         // 保存当前配置供下次使用
         saveLastConfig(getCurrentConfigFromForm());
         
-        const res = await API.createTask({
-            gpu_id: State.selectedGpu,
+        const taskData = {
+            task_id: State.currentTaskId,
+            gpu_id: -1,  // -1 表示自动分配GPU
             model_type: 'wan',
             description: name,
             dataset: {
@@ -931,21 +1240,36 @@ async function startTraining() {
             config: formValues,
             raw_videos: State.rawVideos.map(v => v.filename),
             processed_videos: State.processedVideos.map(v => ({ filename: v.filename, caption: v.caption }))
-        });
+        };
+        
+        console.log('[startTraining] 任务数据:', taskData);
+        
+        const res = await API.createTask(taskData);
+        
+        console.log('[startTraining] API 响应:', res);
         
         if (res.code === 201 || res.code === 200) {
             const taskId = res.data?.task_id;
-            toast('训练任务创建成功！', 'success');
+            const status = res.data?.status;
+            if (status === 'queued') {
+                toast('任务已加入排队队列！', 'success');
+            } else {
+                toast('训练任务已提交！', 'success');
+            }
+            clearDirty();
+            State.isNewTask = false;
             State.lossHistory = [];
+            resetBtn();
             if (taskId) showTrainingStatus(taskId, name);
             else setTimeout(() => showHomePage(), 1500);
         } else {
-            throw new Error(res.message || '创建失败');
+            resetBtn();
+            throw new Error(res.message || '提交失败');
         }
     } catch (e) {
-        toast(`创建失败: ${e.message}`, 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '开始训练'; }
+        console.error('[startTraining] 错误:', e);
+        toast(`提交失败: ${e.message}`, 'error');
+        resetBtn();
     }
 }
 
@@ -960,17 +1284,12 @@ async function saveDraft() {
         return;
     }
     
-    // 自动添加日期前缀
-    if (!/^\d{6}_\d{4}_/.test(name)) {
-        name = generateDatePrefix() + name;
-        document.getElementById('task-name').value = name;
-    }
-    
     try {
         const formValues = getFormValues();
         saveLastConfig(getCurrentConfigFromForm());
         
         const draftData = {
+            task_id: State.currentTaskId,
             description: name,
             model_type: 'wan',
             gpu_id: State.selectedGpu,
@@ -989,6 +1308,12 @@ async function saveDraft() {
         const res = await API.saveDraft(draftData);
         if (res.code === 201 || res.code === 200) {
             toast('草稿保存成功！', 'success');
+            clearDirty();
+            State.isNewTask = false;
+            // 更新 task_id 为服务器返回的正式 ID
+            if (res.data?.task_id) {
+                State.currentTaskId = res.data.task_id;
+            }
             loadTasks();
         } else {
             throw new Error(res.message || '保存失败');
@@ -1192,6 +1517,26 @@ function updateTrainingStatusUI(data) {
         if (data.status === 'completed') toast('训练完成！', 'success');
         else if (data.status === 'failed') toast(`训练失败: ${data.error_message || '未知错误'}`, 'error');
     }
+    
+    // 更新footer按钮 - 失败/停止的任务显示重新提交按钮
+    const footer = document.querySelector('.status-footer');
+    if (footer && data.task_id) {
+        if (['failed', 'stopped'].includes(data.status)) {
+            footer.innerHTML = `
+                <button class="btn-primary" onclick="restartTraining('${data.task_id}')">重新提交</button>
+                <button class="btn-secondary" onclick="hideTrainingStatus()">关闭</button>
+            `;
+        } else if (['running', 'queued'].includes(data.status)) {
+            footer.innerHTML = `
+                <button class="btn-danger" onclick="stopTraining('${data.task_id}')">停止训练</button>
+                <button class="btn-secondary" onclick="hideTrainingStatus()">关闭</button>
+            `;
+        } else {
+            footer.innerHTML = `
+                <button class="btn-secondary" onclick="hideTrainingStatus()">关闭</button>
+            `;
+        }
+    }
 }
 
 function drawLossChart() {
@@ -1302,6 +1647,29 @@ async function stopTraining(taskId) {
     }
 }
 
+async function restartTraining(taskId) {
+    if (!confirm('确定要重新提交训练吗？将清除旧日志并重新开始。')) return;
+    
+    try {
+        const res = await API.restartTask(taskId);
+        if (res.code === 200) {
+            const queuePos = res.data?.queue_position;
+            if (queuePos && queuePos > 0) {
+                toast(`训练任务已重新加入队列，位置: ${queuePos}`, 'success');
+            } else {
+                toast('训练任务已重新提交', 'success');
+            }
+            // 重新开始状态轮询
+            showTrainingStatus(taskId);
+        } else {
+            throw new Error(res.message);
+        }
+    } catch (e) {
+        toast(`重新提交失败: ${e.message}`, 'error');
+    }
+}
+window.restartTraining = restartTraining;
+
 // ============================================
 // 推理功能
 // ============================================
@@ -1327,7 +1695,9 @@ async function navigateTo(page) {
     document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
     document.getElementById(`page-${page}`)?.classList.add('active');
     
+    State.currentPage = page;
     localStorage.setItem('currentPage', page);
+    autoSaveState();
     
     if (page === 'inference') {
         await loadInferenceData();
@@ -1368,20 +1738,43 @@ async function loadTrainingTasksWithLoras() {
                 return;
             }
             
-            container.innerHTML = res.data.tasks.map(task => `
+            container.innerHTML = res.data.tasks.map(task => {
+                const readyCount = task.epochs.filter(e => e.ready).length;
+                const pendingCount = task.epochs.filter(e => e.pending).length;
+                const statusBadge = getTaskStatusBadge(task.task_status);
+                const metaText = pendingCount > 0 
+                    ? `${readyCount} 个已就绪 · ${pendingCount} 个训练中`
+                    : `${task.epochs.length} 个版本`;
+                return `
                 <div class="task-select-item ${InferState.selectedTask === task.task_id ? 'selected' : ''}" 
                      onclick="selectTrainingTask('${task.task_id}')">
                     <div class="task-select-info">
-                        <span class="task-select-name">${task.task_name || task.task_id.slice(-12)}</span>
-                        <span class="task-select-meta">${task.epochs.length} 个版本 · 最新 epoch${task.latest_epoch}</span>
+                        <div class="task-select-header">
+                            <span class="task-select-name">${task.task_name || task.task_id.slice(-12)}</span>
+                            ${statusBadge}
+                        </div>
+                        <span class="task-select-meta">${metaText}</span>
                     </div>
                 </div>
-            `).join('');
+            `}).join('');
         } else {
             throw new Error(res.message || '获取失败');
         }
     } catch (e) {
         container.innerHTML = `<div class="empty-state error"><p>加载失败: ${e.message}</p></div>`;
+    }
+}
+
+function getTaskStatusBadge(status) {
+    switch (status) {
+        case 'running':
+            return '<span class="task-status-badge running">训练中</span>';
+        case 'queued':
+            return '<span class="task-status-badge queued">排队中</span>';
+        case 'completed':
+            return '<span class="task-status-badge completed">已完成</span>';
+        default:
+            return '';
     }
 }
 
@@ -1402,55 +1795,53 @@ function selectTrainingTask(taskId) {
     if (task) {
         renderEpochGrid(task.epochs);
     }
+    
+    autoSaveState();
 }
 
 function renderEpochGrid(epochs) {
     const grid = document.getElementById('epoch-grid');
     if (!grid) return;
     
-    grid.innerHTML = epochs.map(ep => `
-        <div class="epoch-item ${InferState.selectedLoras.some(l => l.path === ep.path) ? 'selected' : ''}"
-             onclick="toggleEpochSelection('${ep.path}', 'epoch${ep.epoch}', ${ep.epoch})">
+    grid.innerHTML = epochs.map(ep => {
+        const isPending = ep.pending && !ep.ready;
+        const isSelected = InferState.selectedLoras.some(l => l.epoch === ep.epoch);
+        const sizeText = isPending ? '训练中' : `${ep.size_mb.toFixed(0)}MB`;
+        return `
+        <div class="epoch-item ${isSelected ? 'selected' : ''} ${isPending ? 'pending' : ''}"
+             onclick="toggleEpochSelection('${ep.path || ''}', 'epoch${ep.epoch}', ${ep.epoch}, ${isPending})">
             <span class="epoch-name">Epoch ${ep.epoch}</span>
-            <span class="epoch-size">${ep.size_mb.toFixed(0)}MB</span>
+            <span class="epoch-size">${sizeText}</span>
+            ${isPending ? '<span class="pending-indicator"></span>' : ''}
         </div>
-    `).join('');
+    `}).join('');
     
     updateSelectedLorasTags();
 }
 
-function toggleEpochSelection(path, name, epoch) {
-    const idx = InferState.selectedLoras.findIndex(l => l.path === path);
+function toggleEpochSelection(path, name, epoch, isPending = false) {
+    const idx = InferState.selectedLoras.findIndex(l => l.epoch === epoch);
     if (idx >= 0) {
         InferState.selectedLoras.splice(idx, 1);
     } else {
-        InferState.selectedLoras.push({ path, name, epoch });
+        InferState.selectedLoras.push({ path: path || null, name, epoch, pending: isPending });
     }
     
     // 更新 UI
-    document.querySelectorAll('.epoch-item').forEach(el => {
-        if (el.onclick.toString().includes(path)) {
-            el.classList.toggle('selected', InferState.selectedLoras.some(l => l.path === path));
-        }
-    });
+    const task = InferState.trainingTasks.find(t => t.task_id === InferState.selectedTask);
+    if (task) {
+        renderEpochGrid(task.epochs);
+    }
     
-    updateSelectedLorasTags();
+    autoSaveState();
 }
 
 function updateSelectedLorasTags() {
+    // 不再显示已选择标签，直接隐藏容器
     const container = document.getElementById('selected-loras');
-    const tags = document.getElementById('selected-lora-tags');
-    if (!container || !tags) return;
-    
-    if (InferState.selectedLoras.length === 0) {
+    if (container) {
         container.style.display = 'none';
-        return;
     }
-    
-    container.style.display = 'flex';
-    tags.innerHTML = InferState.selectedLoras.map(l => `
-        <span class="lora-tag">${l.name} <button onclick="removeLora('${l.path}')">×</button></span>
-    `).join('');
 }
 
 function removeLora(path) {
@@ -1544,13 +1935,16 @@ async function loadModalImages(folder) {
                 return;
             }
             
+            // 使用缩略图预加载，瀑布流布局
             grid.innerHTML = res.data.images.map(img => {
                 const isSelected = InferState.selectedModalImages.some(s => s.id === img.id);
+                const ratio = img.width && img.height ? img.height / img.width : 1;
                 return `
-                <div class="gallery-image-item ${isSelected ? 'selected' : ''}"
+                <div class="gallery-image-item waterfall-item ${isSelected ? 'selected' : ''}"
+                     style="--aspect-ratio: ${ratio};"
                      data-id="${img.id}"
                      onclick="selectModalImage('${img.id}', '${img.path}', '${img.url}', event)">
-                    <img src="${img.url}" alt="" loading="lazy">
+                    <img src="${img.thumb_url}" alt="" loading="lazy" onerror="this.src='${img.url}'">
                     <div class="select-indicator"></div>
                 </div>
             `}).join('');
@@ -1629,27 +2023,21 @@ async function confirmImageSelection() {
         console.error('获取图片信息失败:', e);
     }
     
-    // 更新预览 - 显示多张图片的缩略图
+    // 更新预览 - 显示所有图片，原比例自适应
     const preview = document.getElementById('test-image-preview');
     if (preview) {
-        if (InferState.selectedModalImages.length === 1) {
-            preview.innerHTML = `<img src="${firstImage.url}" alt="测试图片">`;
-        } else {
-            // 多张图片显示网格预览
-            preview.innerHTML = `
-                <div class="multi-preview">
-                    ${InferState.selectedModalImages.slice(0, 4).map(img => 
-                        `<img src="${img.url}" alt="">`
-                    ).join('')}
-                    ${InferState.selectedModalImages.length > 4 ? 
-                        `<div class="more-count">+${InferState.selectedModalImages.length - 4}</div>` : ''}
-                </div>
-            `;
-        }
+        preview.innerHTML = `
+            <div class="test-images-grid">
+                ${InferState.selectedModalImages.map(img => 
+                    `<img src="${img.url}" alt="" loading="lazy">`
+                ).join('')}
+            </div>
+        `;
     }
     
     closeGalleryModal();
     toast(`已选择 ${InferState.selectedModalImages.length} 张图片`, 'success');
+    autoSaveState();
 }
 
 async function handleModalUpload(files) {
@@ -1724,50 +2112,204 @@ async function startInference() {
         return;
     }
     
-    const prompt = document.getElementById('infer-prompt')?.value?.trim();
-    if (!prompt) {
-        toast('请输入提示词', 'warning');
+    const triggerWord = document.getElementById('infer-prompt')?.value?.trim();
+    if (!triggerWord) {
+        toast('请输入触发词', 'warning');
         return;
     }
     
-    // 使用第一个选中的 LoRA（后续可扩展为多 LoRA 融合）
-    const lora = InferState.selectedLoras[0];
+    // 检查是否有选中的图片
+    const hasMultipleImages = InferState.testImages && InferState.testImages.length > 1;
+    const hasSingleImage = InferState.testImagePath || (InferState.testImages && InferState.testImages.length === 1);
     
-    const data = {
-        lora_path: lora.path,
-        lora_name: lora.name,
-        prompt: prompt,
-        image_path: InferState.testImagePath,
+    if (!hasSingleImage && !hasMultipleImages) {
+        toast('请选择测试图片', 'warning');
+        return;
+    }
+    
+    // 获取图片列表
+    const imagePaths = hasMultipleImages 
+        ? InferState.testImages.map(img => img.path)
+        : [InferState.testImages?.[0]?.path || InferState.testImagePath];
+    
+    // 区分已就绪和pending的epoch
+    const readyLoras = InferState.selectedLoras.filter(l => !l.pending && l.path);
+    const pendingLoras = InferState.selectedLoras.filter(l => l.pending || !l.path);
+    
+    // 基础参数
+    const baseParams = {
+        trigger_word: triggerWord,
+        lora_strength: parseFloat(document.getElementById('infer-lora-strength')?.value) || 1.0,
         width: parseInt(document.getElementById('infer-width')?.value) || 832,
         height: parseInt(document.getElementById('infer-height')?.value) || 480,
         num_frames: parseInt(document.getElementById('infer-frames')?.value) || 81,
-        num_steps: parseInt(document.getElementById('infer-steps')?.value) || 30,
-        guidance_scale: parseFloat(document.getElementById('infer-guidance')?.value) || 5.0,
-        lora_strength: parseFloat(document.getElementById('infer-lora-strength')?.value) || 0.8,
-        gpu_id: parseInt(document.getElementById('infer-gpu')?.value) || 0,
-        seed: parseInt(document.getElementById('infer-seed')?.value) || -1
+        num_steps: parseInt(document.getElementById('infer-steps')?.value) || 4,
+        guidance_scale: parseFloat(document.getElementById('infer-guidance')?.value) || 1.0,
+        seed: parseInt(document.getElementById('infer-seed')?.value) || -1,
+        use_auto_caption: document.getElementById('infer-auto-caption')?.checked ?? true,
+        training_task_id: InferState.selectedTask  // 训练任务ID
     };
     
-    toast('正在创建推理任务...', 'info');
+    // 生成批次ID
+    const isMultiTask = InferState.selectedLoras.length > 1 || imagePaths.length > 1;
+    const batchId = isMultiTask ? `batch_${Date.now()}_${Math.random().toString(36).substr(2, 6)}` : null;
+    
+    // 总任务数（包括预约的）
+    const totalTasks = InferState.selectedLoras.length * imagePaths.length;
+    const pendingTaskCount = pendingLoras.length * imagePaths.length;
+    
+    if (pendingTaskCount > 0) {
+        toast(`正在创建 ${totalTasks} 个推理任务（${pendingTaskCount} 个为预约任务）...`, 'info');
+    } else {
+        toast(`正在创建 ${totalTasks} 个推理任务...`, 'info');
+    }
     
     try {
-        const res = await API.request('/inference/create', {
-            method: 'POST',
-            body: JSON.stringify(data)
-        });
+        const allTasks = [];
+        const scheduledTasks = [];
         
-        if (res.code === 201 && res.data) {
-            InferState.currentInferenceTask = res.data.task_id;
-            toast('推理任务已创建', 'success');
+        // 为已就绪的 epoch 创建立即执行的任务
+        for (let epochIdx = 0; epochIdx < readyLoras.length; epochIdx++) {
+            const lora = readyLoras[epochIdx];
             
-            pollInferenceProgress(res.data.task_id);
-            updateResultArea('loading', res.data);
+            for (let imgIdx = 0; imgIdx < imagePaths.length; imgIdx++) {
+                const data = {
+                    ...baseParams,
+                    lora_path: lora.path,
+                    lora_name: lora.name,
+                    image_path: imagePaths[imgIdx],
+                    batch_id: batchId,
+                    epoch_index: epochIdx,
+                    image_index: imgIdx
+                };
+                
+                const res = await API.request('/inference/create', {
+                    method: 'POST',
+                    body: JSON.stringify(data)
+                });
+                
+                if (res.code === 201 && res.data) {
+                    allTasks.push(res.data);
+                }
+            }
+        }
+        
+        // 为pending的 epoch 创建预约任务
+        if (pendingLoras.length > 0) {
+            const pendingData = {
+                training_task_id: InferState.selectedTask,
+                epochs: pendingLoras.map(l => l.epoch),
+                trigger_word: baseParams.trigger_word,
+                image_paths: imagePaths,
+                lora_strength: baseParams.lora_strength,
+                batch_id: batchId
+            };
+            
+            const pendingRes = await API.request('/inference/create-pending', {
+                method: 'POST',
+                body: JSON.stringify(pendingData)
+            });
+            
+            if (pendingRes.code === 201 && pendingRes.data) {
+                scheduledTasks.push(pendingRes.data);
+                // 如果有立即创建的任务，将其加入轮询
+                if (pendingRes.data.created_tasks && pendingRes.data.created_tasks.length > 0) {
+                    pollBatchInferenceProgress(pendingRes.data.created_tasks.map(t => t.task_id));
+                }
+                // 启动pending任务的轮询检查（如果有pending任务）
+                if (pendingRes.data.pending_tasks && pendingRes.data.pending_tasks.length > 0) {
+                    startScheduledInferencePolling(pendingRes.data.batch_id);
+                }
+            }
+        }
+        
+        if (allTasks.length > 0 || scheduledTasks.length > 0) {
+            if (scheduledTasks.length > 0) {
+                toast(`已创建 ${allTasks.length} 个立即执行 + ${pendingTaskCount} 个预约推理任务`, 'success');
+            } else {
+                toast(`已创建 ${allTasks.length} 个推理任务（GPU 4-7 自动分配）`, 'success');
+            }
+            
+            // 保存当前批次信息用于网格展示
+            InferState.currentBatch = {
+                batchId,
+                epochs: InferState.selectedLoras.map(l => l.name),
+                imageCount: imagePaths.length,
+                tasks: allTasks,
+                scheduledTasks: scheduledTasks,
+                visibleEpochs: new Set(InferState.selectedLoras.map((_, i) => i))
+            };
+            
+            // 开始轮询已创建的任务
+            if (allTasks.length > 0) {
+                pollBatchInferenceProgress(allTasks.map(t => t.task_id));
+            }
+            
+            // 显示网格结果区
+            updateBatchResultArea();
+            
+            loadInferenceHistory();
         } else {
-            throw new Error(res.message || '创建失败');
+            throw new Error('没有成功创建任何任务');
         }
     } catch (e) {
         toast(`创建失败: ${e.message}`, 'error');
     }
+}
+
+// 预约推理轮询（每5分钟检查一次）
+function startScheduledInferencePolling(batchId) {
+    const POLL_INTERVAL = 5 * 60 * 1000; // 5分钟
+    let pollCount = 0;
+    const MAX_POLLS = 24 * 12; // 最多轮询24小时（每5分钟一次）
+    
+    const checkSchedule = async () => {
+        pollCount++;
+        if (pollCount > MAX_POLLS) {
+            console.log('预约推理轮询已达最大次数，停止轮询');
+            return;
+        }
+        
+        try {
+            // 重新获取任务列表，检查是否有新完成的任务
+            const res = await API.request('/inference/tasks-with-loras');
+            if (res.code === 200 && res.data?.tasks) {
+                // 检查当前选中任务的epoch状态
+                const selectedTask = res.data.tasks.find(t => t.task_id === InferState.selectedTask);
+                if (selectedTask) {
+                    // 找出新就绪的epoch
+                    const newlyReady = selectedTask.epochs.filter(ep => 
+                        ep.ready && InferState.selectedLoras.some(l => l.epoch === ep.epoch && l.pending)
+                    );
+                    
+                    if (newlyReady.length > 0) {
+                        toast(`${newlyReady.length} 个新的 LoRA 已就绪，正在创建推理任务...`, 'info');
+                        // 刷新任务列表
+                        await loadTrainingTasksWithLoras();
+                        loadInferenceHistory();
+                    }
+                    
+                    // 检查是否还有pending的epoch
+                    const stillPending = selectedTask.epochs.filter(ep => ep.pending && !ep.ready);
+                    if (stillPending.length === 0) {
+                        toast('所有预约的 LoRA 已就绪！', 'success');
+                        return; // 停止轮询
+                    }
+                }
+                
+                // 继续轮询
+                setTimeout(checkSchedule, POLL_INTERVAL);
+            }
+        } catch (e) {
+            console.error('检查预约推理状态失败:', e);
+            // 出错也继续轮询
+            setTimeout(checkSchedule, POLL_INTERVAL);
+        }
+    };
+    
+    // 首次检查延迟5分钟
+    setTimeout(checkSchedule, POLL_INTERVAL);
+    toast('预约推理任务已创建，系统将每5分钟检查一次训练进度', 'info');
 }
 
 async function pollInferenceProgress(taskId) {
@@ -1819,13 +2361,13 @@ function updateResultArea(status, task) {
         `;
     } else if (status === 'completed') {
         area.innerHTML = `
-            <div class="result-success">
+            <div class="result-success single-video">
                 <video controls autoplay loop>
                     <source src="/api/v1/inference/output/${task.task_id}/video" type="video/mp4">
                 </video>
                 <div class="result-info">
-                    <span>任务 ID: ${task.task_id}</span>
-                    <a href="/api/v1/inference/output/${task.task_id}/video" download class="btn-secondary">下载视频</a>
+                    <span>${task.lora_name || ''}</span>
+                    <a href="/api/v1/inference/output/${task.task_id}/video" download class="btn-secondary">下载</a>
                 </div>
             </div>
         `;
@@ -1839,12 +2381,190 @@ function updateResultArea(status, task) {
     }
 }
 
+// 批量任务轮询
+async function pollBatchInferenceProgress(taskIds) {
+    const poll = async () => {
+        try {
+            let allCompleted = true;
+            let anyRunning = false;
+            
+            // 获取所有任务状态
+            for (const taskId of taskIds) {
+                const res = await API.request(`/inference/task/${taskId}`);
+                if (res.code === 200 && res.data) {
+                    const task = res.data;
+                    // 更新 InferState.currentBatch 中对应任务
+                    if (InferState.currentBatch) {
+                        const idx = InferState.currentBatch.tasks.findIndex(t => t.task_id === taskId);
+                        if (idx >= 0) {
+                            InferState.currentBatch.tasks[idx] = task;
+                        }
+                    }
+                    
+                    if (['queued', 'loading', 'running'].includes(task.status)) {
+                        allCompleted = false;
+                        anyRunning = true;
+                    }
+                }
+            }
+            
+            // 更新网格显示
+            updateBatchResultArea();
+            
+            if (!allCompleted) {
+                setTimeout(poll, 2000);
+            } else {
+                toast('所有推理任务已完成！', 'success');
+                loadInferenceHistory();
+            }
+        } catch (e) {
+            console.error('批量轮询失败:', e);
+        }
+    };
+    
+    poll();
+}
+
+// 网格结果展示（横轴 epoch，纵轴图片）
+function updateBatchResultArea() {
+    const area = document.getElementById('result-video-area');
+    if (!area || !InferState.currentBatch) return;
+    
+    const batch = InferState.currentBatch;
+    const epochs = batch.epochs;
+    const imageCount = batch.imageCount;
+    const tasks = batch.tasks;
+    const visibleEpochs = batch.visibleEpochs;
+    
+    // 构建任务矩阵 [imageIdx][epochIdx]
+    const taskMatrix = [];
+    for (let imgIdx = 0; imgIdx < imageCount; imgIdx++) {
+        taskMatrix[imgIdx] = [];
+        for (let epochIdx = 0; epochIdx < epochs.length; epochIdx++) {
+            const task = tasks.find(t => 
+                t.image_index === imgIdx && 
+                (t.epoch_index === epochIdx || t.lora_name === epochs[epochIdx])
+            );
+            taskMatrix[imgIdx][epochIdx] = task;
+        }
+    }
+    
+    // 构建 epoch 过滤器
+    const epochFilterHtml = epochs.map((name, idx) => `
+        <label class="epoch-filter-item ${visibleEpochs.has(idx) ? 'active' : ''}">
+            <input type="checkbox" ${visibleEpochs.has(idx) ? 'checked' : ''} 
+                   onchange="toggleEpochVisibility(${idx})">
+            <span>${name}</span>
+        </label>
+    `).join('');
+    
+    // 计算可见列数
+    const visibleCount = visibleEpochs.size;
+    
+    // 构建表头（epoch）
+    const headerHtml = epochs.map((name, idx) => 
+        visibleEpochs.has(idx) ? `<div class="grid-header-cell">${name}</div>` : ''
+    ).join('');
+    
+    // 构建网格内容
+    let gridContentHtml = '';
+    for (let imgIdx = 0; imgIdx < imageCount; imgIdx++) {
+        for (let epochIdx = 0; epochIdx < epochs.length; epochIdx++) {
+            if (!visibleEpochs.has(epochIdx)) continue;
+            
+            const task = taskMatrix[imgIdx][epochIdx];
+            gridContentHtml += renderGridCell(task, imgIdx, epochIdx);
+        }
+    }
+    
+    area.innerHTML = `
+        <div class="batch-result-container">
+            <div class="batch-result-wrapper">
+                <div class="epoch-filter">
+                    <span class="filter-label">Epoch 筛选:</span>
+                    ${epochFilterHtml}
+                </div>
+                <div class="result-grid" style="--epoch-count: ${visibleCount}">
+                    <div class="grid-header">
+                        ${headerHtml}
+                    </div>
+                    <div class="grid-body">
+                        ${Array.from({length: imageCount}, (_, imgIdx) => `
+                            <div class="grid-row">
+                                ${epochs.map((_, epochIdx) => 
+                                    visibleEpochs.has(epochIdx) ? renderGridCell(taskMatrix[imgIdx][epochIdx], imgIdx, epochIdx) : ''
+                                ).join('')}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// 渲染单个网格单元
+function renderGridCell(task, imgIdx, epochIdx) {
+    if (!task) {
+        return `<div class="grid-cell empty"><span>-</span></div>`;
+    }
+    
+    const status = task.status;
+    
+    if (status === 'completed') {
+        return `
+            <div class="grid-cell completed">
+                <video controls loop muted playsinline>
+                    <source src="/api/v1/inference/output/${task.task_id}/video" type="video/mp4">
+                </video>
+                <a class="cell-download" href="/api/v1/inference/output/${task.task_id}/video" download title="下载">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                    </svg>
+                </a>
+            </div>`;
+    } else if (status === 'failed') {
+        return `
+            <div class="grid-cell failed" title="${task.error_message || '推理失败'}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+                    <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+                </svg>
+            </div>`;
+    } else {
+        const progress = task.progress || 0;
+        return `
+            <div class="grid-cell running">
+                <div class="cell-progress">
+                    <div class="cell-progress-bar" style="width: ${progress}%"></div>
+                </div>
+                <span class="cell-progress-text">${progress.toFixed(0)}%</span>
+            </div>`;
+    }
+}
+
+// 切换 epoch 可见性
+function toggleEpochVisibility(epochIdx) {
+    if (!InferState.currentBatch) return;
+    
+    const visibleEpochs = InferState.currentBatch.visibleEpochs;
+    if (visibleEpochs.has(epochIdx)) {
+        // 至少保留一个可见
+        if (visibleEpochs.size > 1) {
+            visibleEpochs.delete(epochIdx);
+        }
+    } else {
+        visibleEpochs.add(epochIdx);
+    }
+    
+    updateBatchResultArea();
+}
+
 async function loadInferenceHistory() {
     const container = document.getElementById('inference-history-list');
     if (!container) return;
     
     try {
-        const res = await API.request('/inference/tasks?limit=10');
+        const res = await API.request('/inference/tasks?limit=50');
         if (res.code === 200 && res.data?.tasks) {
             const tasks = res.data.tasks;
             if (tasks.length === 0) {
@@ -1852,15 +2572,83 @@ async function loadInferenceHistory() {
                 return;
             }
             
-            container.innerHTML = tasks.map(task => `
+            // 按 batch_id 分组
+            const batches = {};
+            const singleTasks = [];
+            
+            tasks.forEach(task => {
+                if (task.batch_id) {
+                    if (!batches[task.batch_id]) {
+                        batches[task.batch_id] = [];
+                    }
+                    batches[task.batch_id].push(task);
+                } else {
+                    singleTasks.push(task);
+                }
+            });
+            
+            // 构建历史列表 HTML
+            let html = '';
+            
+            // 先显示批量任务（按最新任务时间排序）
+            const batchEntries = Object.entries(batches)
+                .map(([batchId, batchTasks]) => ({
+                    batchId,
+                    tasks: batchTasks,
+                    latestTime: Math.max(...batchTasks.map(t => new Date(t.created_at).getTime()))
+                }))
+                .sort((a, b) => b.latestTime - a.latestTime)
+                .slice(0, 5); // 只显示最近 5 个批次
+            
+            for (const {batchId, tasks: batchTasks} of batchEntries) {
+                const completedCount = batchTasks.filter(t => t.status === 'completed').length;
+                const runningCount = batchTasks.filter(t => ['queued', 'loading', 'running'].includes(t.status)).length;
+                const failedCount = batchTasks.filter(t => t.status === 'failed').length;
+                const totalCount = batchTasks.length;
+                
+                // 获取 epoch 列表（去重）
+                const epochs = [...new Set(batchTasks.map(t => t.lora_name))];
+                const imageCount = Math.max(...batchTasks.map(t => t.image_index || 0)) + 1;
+                
+                const status = runningCount > 0 ? 'running' : (completedCount === totalCount ? 'completed' : (failedCount > 0 ? 'failed' : 'queued'));
+                const firstTask = batchTasks[0];
+                
+                html += `
+                <div class="history-item batch ${status}" onclick="viewInferenceResult('${firstTask.task_id}', '${batchId}')">
+                    <div class="history-info">
+                        <span class="history-prompt">${epochs.length} Epoch × ${imageCount} 图片</span>
+                        <span class="history-meta">${(firstTask.trigger_word || '').substring(0, 15)} · ${formatDate(firstTask.created_at)}</span>
+                    </div>
+                    <div class="history-actions">
+                        <span class="history-status ${status}">${completedCount}/${totalCount} 完成</span>
+                    </div>
+                </div>`;
+            }
+            
+            // 再显示单个任务（最近 5 个）
+            for (const task of singleTasks.slice(0, 5)) {
+                const isRunning = ['queued', 'loading', 'running'].includes(task.status);
+                const cancelBtn = isRunning ? 
+                    `<button class="btn-cancel-small" onclick="event.stopPropagation(); cancelInferenceTask('${task.task_id}')" title="取消任务">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>` : '';
+                
+                html += `
                 <div class="history-item ${task.status}" onclick="viewInferenceResult('${task.task_id}')">
                     <div class="history-info">
-                        <span class="history-prompt">${(task.prompt || '').substring(0, 30)}...</span>
+                        <span class="history-prompt">${(task.trigger_word || task.prompt || '').substring(0, 30)}...</span>
                         <span class="history-meta">${task.lora_name || ''} · ${formatDate(task.created_at)}</span>
                     </div>
-                    <span class="history-status ${task.status}">${getInferenceStatusText(task.status)}</span>
-                </div>
-            `).join('');
+                    <div class="history-actions">
+                        <span class="history-status ${task.status}">${getInferenceStatusText(task.status)}${isRunning ? ` (${task.progress?.toFixed(0) || 0}%)` : ''}</span>
+                        ${cancelBtn}
+                    </div>
+                </div>`;
+            }
+            
+            container.innerHTML = html || '<div class="empty-state small"><p>暂无历史记录</p></div>';
         }
     } catch (e) {
         console.error('加载历史失败:', e);
@@ -1878,14 +2666,56 @@ function getInferenceStatusText(status) {
     return map[status] || status;
 }
 
-async function viewInferenceResult(taskId) {
+async function viewInferenceResult(taskId, batchId = null) {
     try {
+        // 如果有 batchId，获取整个批次的任务
+        if (batchId) {
+            const res = await API.request(`/inference/tasks?batch_id=${batchId}`);
+            if (res.code === 200 && res.data?.tasks) {
+                const tasks = res.data.tasks;
+                if (tasks.length > 1) {
+                    // 重建批次状态用于网格展示
+                    const epochs = [...new Set(tasks.map(t => t.lora_name))];
+                    const imageCount = Math.max(...tasks.map(t => t.image_index || 0)) + 1;
+                    
+                    InferState.currentBatch = {
+                        batchId,
+                        epochs,
+                        imageCount,
+                        tasks,
+                        visibleEpochs: new Set(epochs.map((_, i) => i))
+                    };
+                    
+                    updateBatchResultArea();
+                    return;
+                }
+            }
+        }
+        
+        // 单个任务展示
         const res = await API.request(`/inference/task/${taskId}`);
         if (res.code === 200 && res.data) {
+            InferState.currentBatch = null; // 清除批次状态
             updateResultArea(res.data.status, res.data);
         }
     } catch (e) {
         toast(`获取结果失败: ${e.message}`, 'error');
+    }
+}
+
+async function cancelInferenceTask(taskId) {
+    if (!confirm('确定要取消此推理任务吗？')) return;
+    
+    try {
+        const res = await API.request(`/inference/task/${taskId}/stop`, { method: 'POST' });
+        if (res.code === 200) {
+            toast('任务已取消', 'success');
+            loadInferenceHistory();
+        } else {
+            toast(res.message || '取消失败', 'error');
+        }
+    } catch (e) {
+        toast(`取消失败: ${e.message}`, 'error');
     }
 }
 
@@ -1961,19 +2791,78 @@ async function loadGalleryImages(folder) {
                 return;
             }
             
-            grid.innerHTML = res.data.images.map(img => `
-                <div class="gallery-card">
-                    <img src="${img.url}" alt="${img.name}" loading="lazy">
-                    <div class="gallery-card-info">
+            // 瀑布流布局：使用缩略图预加载，点击查看原图
+            grid.innerHTML = res.data.images.map(img => {
+                // 计算宽高比（默认为 1:1，如果没有尺寸信息）
+                const ratio = img.width && img.height ? img.height / img.width : 1;
+                return `
+                <div class="gallery-card waterfall-item" 
+                     style="--aspect-ratio: ${ratio};"
+                     data-url="${img.url}"
+                     data-name="${img.name}"
+                     onclick="openImageLightbox('${img.url}', '${img.name}')">
+                    <img src="${img.thumb_url}" 
+                         alt="${img.name}" 
+                         loading="lazy"
+                         onerror="this.src='${img.url}'">
+                    <div class="gallery-card-overlay">
                         <span class="name">${img.name}</span>
-                        <button class="delete-btn" onclick="deleteGalleryImage('${img.id}')">删除</button>
+                        <button class="delete-btn" onclick="event.stopPropagation(); deleteGalleryImage('${img.id}')">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
-            `).join('');
+            `}).join('');
         }
     } catch (e) {
         grid.innerHTML = `<div class="empty-state error"><p>加载失败: ${e.message}</p></div>`;
     }
+}
+
+// Lightbox 原图查看
+function openImageLightbox(url, name) {
+    // 移除已存在的 lightbox
+    const existing = document.getElementById('image-lightbox');
+    if (existing) existing.remove();
+    
+    const lightbox = document.createElement('div');
+    lightbox.id = 'image-lightbox';
+    lightbox.className = 'lightbox-overlay';
+    lightbox.innerHTML = `
+        <div class="lightbox-content">
+            <div class="lightbox-header">
+                <span class="lightbox-title">${name}</span>
+                <button class="lightbox-close" onclick="closeLightbox()">×</button>
+            </div>
+            <div class="lightbox-body">
+                <div class="lightbox-loading">
+                    <div class="spinner"></div>
+                    <p>加载原图中...</p>
+                </div>
+                <img src="${url}" alt="${name}" onload="this.parentElement.querySelector('.lightbox-loading').style.display='none'; this.style.opacity=1;">
+            </div>
+        </div>
+    `;
+    lightbox.addEventListener('click', (e) => {
+        if (e.target === lightbox) closeLightbox();
+    });
+    document.body.appendChild(lightbox);
+    
+    // ESC 键关闭
+    const escHandler = (e) => {
+        if (e.key === 'Escape') {
+            closeLightbox();
+            document.removeEventListener('keydown', escHandler);
+        }
+    };
+    document.addEventListener('keydown', escHandler);
+}
+
+function closeLightbox() {
+    const lightbox = document.getElementById('image-lightbox');
+    if (lightbox) lightbox.remove();
 }
 
 async function createGalleryFolder() {
@@ -2092,14 +2981,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
-    // Modal frame slider sync
-    const frameSlider = document.getElementById('modal-frame-number');
-    const frameInput = document.getElementById('modal-frame-val');
-    if (frameSlider && frameInput) {
-        frameSlider.addEventListener('input', () => { frameInput.value = frameSlider.value; updateFramePreview(); });
-        frameInput.addEventListener('change', () => { frameSlider.value = frameInput.value; updateFramePreview(); });
-    }
-    
     // Drag & drop
     const uploadZone = document.getElementById('upload-zone');
     if (uploadZone) {
@@ -2107,6 +2988,26 @@ document.addEventListener('DOMContentLoaded', () => {
         uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
         uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('dragover'); handleAddVideos(e.dataTransfer.files); });
     }
+    
+    // 监听推理参数表单变化，自动保存状态
+    const inferFormInputs = [
+        'infer-prompt', 'infer-lora-strength', 'infer-width', 'infer-height',
+        'infer-frames', 'infer-steps', 'infer-guidance', 'infer-seed', 'infer-auto-caption'
+    ];
+    inferFormInputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', autoSaveState);
+            if (el.type === 'text' || el.tagName === 'TEXTAREA') {
+                el.addEventListener('input', autoSaveState);
+            }
+        }
+    });
+    
+    // 监听 config tabs 变化
+    document.querySelectorAll('.config-panel .tab').forEach(tab => {
+        tab.addEventListener('click', autoSaveState);
+    });
     
     // Restore
     restorePage();

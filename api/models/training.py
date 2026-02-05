@@ -136,6 +136,7 @@ class TrainingTask:
     completed_at: Optional[datetime] = None
     logs_path: Optional[str] = None
     error_message: Optional[str] = None
+    data_task_id: Optional[str] = None  # 数据目录的任务ID（用于关联上传的视频）
 
 @dataclass
 class TrainingTaskRequest:
@@ -145,6 +146,9 @@ class TrainingTaskRequest:
     description: Optional[str] = None
     dataset: Optional[DatasetConfig] = None
     config: Optional[TrainingConfig] = None
+    data_task_id: Optional[str] = None  # 数据目录的任务ID（用于关联上传的视频）
+    raw_videos: Optional[List[str]] = None  # 原始视频列表
+    processed_videos: Optional[List[dict]] = None  # 处理后的视频列表
 
 @dataclass
 class TrainingTaskResponse:
@@ -160,6 +164,7 @@ class TrainingTaskResponse:
     estimated_start_time: Optional[datetime] = None
     estimated_duration: Optional[int] = None
     checkpoints: Optional[Dict[str, Any]] = None
+    queue_position: Optional[int] = None  # 队列位置（GPU 满时）
 
 @dataclass
 class TrainingListResponse:

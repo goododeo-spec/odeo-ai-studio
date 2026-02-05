@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ODEO AI Studio</title>
-    <link rel="stylesheet" href="/static/css/main.css?v=19">
+    <link rel="stylesheet" href="/static/css/main.css?v=81">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -118,6 +118,10 @@
                                     <span class="status-spinner"></span>
                                     <span class="status-text" id="status-text">处理中...</span>
                                 </div>
+                                <div class="trigger-word-inline">
+                                    <label>触发词:</label>
+                                    <input type="text" id="trigger-word" class="form-input-sm" placeholder="如: ohwx woman" style="width:150px;">
+                                </div>
                                 <button class="btn-secondary" onclick="document.getElementById('raw-file-input').click()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                                         <path d="M12 5v14M5 12h14"/>
@@ -193,8 +197,11 @@
                                 <input type="text" class="form-input" id="task-name" placeholder="为训练任务起个名字">
                             </div>
                             <div class="form-group">
-                                <label>选择 GPU</label>
-                                <div class="gpu-grid" id="gpu-grid"></div>
+                                <label>GPU 分配</label>
+                                <div class="gpu-auto-info" id="gpu-auto-info">
+                                    <span class="auto-badge">自动</span>
+                                    <span class="auto-text">提交后系统将自动分配空闲 GPU</span>
+                                </div>
                             </div>
                             <div class="form-group">
                                 <label>epochs</label>
@@ -366,7 +373,7 @@
 
                         <div class="config-footer">
                             <button class="draft-btn" onclick="saveDraft()">保存草稿</button>
-                            <button class="start-btn" id="start-btn" onclick="startTraining()">开始训练</button>
+                            <button class="start-btn" id="start-btn" onclick="startTraining()">提交训练</button>
                         </div>
                     </aside>
                 </div>
@@ -423,51 +430,32 @@
                         <div class="config-section">
                             <h3>4. 推理参数</h3>
                             <div class="form-group">
-                                <label>提示词</label>
-                                <textarea class="form-input" id="infer-prompt" rows="3" placeholder="描述要生成的动作，例如: a person dancing energetically"></textarea>
+                                <label>触发词 <span class="form-hint-inline">(映射到节点81)</span></label>
+                                <textarea class="form-input" id="infer-prompt" rows="2" placeholder="如: dancing, walking 等动作描述"></textarea>
                             </div>
+                            <!-- 隐藏的参数：使用 workflow 默认值 -->
+                            <input type="hidden" id="infer-width" value="832">
+                            <input type="hidden" id="infer-height" value="480">
+                            <input type="hidden" id="infer-frames" value="81">
+                            <input type="hidden" id="infer-steps" value="4">
+                            <input type="hidden" id="infer-guidance" value="1.0">
+                            <input type="hidden" id="infer-gpu" value="4">
                             <div class="form-row">
                                 <div class="form-group half">
-                                    <label>宽度 <span class="auto-badge" id="width-auto">(自动)</span></label>
-                                    <input type="number" class="form-input" id="infer-width" value="832" step="16" readonly>
-                                </div>
-                                <div class="form-group half">
-                                    <label>高度 <span class="auto-badge" id="height-auto">(自动)</span></label>
-                                    <input type="number" class="form-input" id="infer-height" value="480" step="16" readonly>
-                                </div>
-                            </div>
-                            <div class="form-row">
-                                <div class="form-group half">
-                                    <label>帧数</label>
-                                    <input type="number" class="form-input" id="infer-frames" value="81" step="4">
-                                </div>
-                                <div class="form-group half">
-                                    <label>采样步数</label>
-                                    <input type="number" class="form-input" id="infer-steps" value="30">
-                                </div>
-                            </div>
-                            <div class="form-row">
-                                <div class="form-group half">
-                                    <label>引导系数</label>
-                                    <input type="number" class="form-input" id="infer-guidance" value="5.0" step="0.5">
-                                </div>
-                                <div class="form-group half">
-                                    <label>LoRA 强度</label>
-                                    <input type="number" class="form-input" id="infer-lora-strength" value="0.8" step="0.1" min="0" max="1">
-                                </div>
-                            </div>
-                            <div class="form-row">
-                                <div class="form-group half">
-                                    <label>GPU</label>
-                                    <select class="form-select" id="infer-gpu">
-                                        <option value="0">GPU 0</option>
-                                    </select>
+                                    <label>LoRA 强度 <span class="form-hint-inline">(节点71)</span></label>
+                                    <input type="number" class="form-input" id="infer-lora-strength" value="1.0" step="0.1" min="0" max="2">
                                 </div>
                                 <div class="form-group half">
                                     <label>Seed (-1随机)</label>
                                     <input type="number" class="form-input" id="infer-seed" value="-1">
                                 </div>
                             </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="infer-auto-caption" checked style="width: 16px; height: 16px; cursor: pointer;">
+                                <label for="infer-auto-caption" style="cursor: pointer; margin: 0;">启用自动描述 (QwenVL)</label>
+                            </div>
+                            <p class="form-hint" style="margin-top: 4px;">使用 QwenVL 模型自动生成图片描述，首次使用需下载约16GB模型。如不需要，可取消勾选加速推理。</p>
+                            <p class="form-hint">推理将使用 GPU 4-7，系统自动分配空闲 GPU</p>
                         </div>
 
                         <div class="config-footer">
@@ -603,65 +591,32 @@
                 <button class="modal-close" onclick="hideProcessModal()">×</button>
             </div>
             <div class="modal-body">
-                <div class="process-config-grid">
-                    <!-- 左侧：帧预览 -->
-                    <div class="frame-preview-section">
-                        <div class="frame-preview" id="frame-preview">
-                            <div class="frame-placeholder">
-                                <p>选择视频查看帧预览</p>
-                            </div>
-                        </div>
-                        <div class="frame-controls">
-                            <label>反推帧号</label>
-                            <div class="slider-row">
-                                <input type="range" class="slider" id="modal-frame-number" min="0" max="100" value="30" oninput="updateFramePreview()">
-                                <input type="number" class="slider-input" id="modal-frame-val" value="30" onchange="updateFramePreview()">
-                            </div>
-                            <p class="form-hint">拖动滑块实时预览该帧画面</p>
-                        </div>
-                        <div class="video-select">
-                            <label>预览视频</label>
-                            <select class="form-select" id="preview-video-select" onchange="loadVideoForPreview()">
-                                <option value="">选择一个视频预览</option>
-                            </select>
-                        </div>
+                <!-- 上方：配置选项 -->
+                <div class="process-options-row">
+                    <div class="form-group">
+                        <label>触发词</label>
+                        <input type="text" class="form-input" id="modal-trigger-word" placeholder="必填，如: laqyzi">
+                        <p class="form-hint">会添加到每个生成的提示词前面</p>
                     </div>
                     
-                    <!-- 右侧：配置选项 -->
-                    <div class="process-options">
-                        <div class="form-group">
-                            <label>触发词前缀</label>
-                            <input type="text" class="form-input" id="modal-trigger-word" placeholder="可选，如: A woman dancing">
-                            <p class="form-hint">会添加到每个生成的提示词前面</p>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>提示词生成方式</label>
-                            <select class="form-select" id="modal-caption-method">
-                                <option value="qwen" selected>千问API生成（推荐）</option>
-                                <option value="prefix_only">仅使用触发词前缀</option>
-                            </select>
-                            <p class="form-hint">千问API会根据视频帧自动生成描述</p>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>输出帧率</label>
-                            <select class="form-select" id="modal-fps">
-                                <option value="16" selected>16 fps</option>
-                                <option value="24">24 fps</option>
-                                <option value="30">30 fps</option>
-                            </select>
-                        </div>
-                        
-                        <div class="process-summary">
-                            <h4>处理预览</h4>
-                            <ul>
-                                <li>待处理视频: <b id="summary-video-count">0</b> 个</li>
-                                <li>输出目录: <code>./data/datasets</code></li>
-                                <li>视频将被重命名为 1.mp4, 2.mp4...</li>
-                            </ul>
-                        </div>
+                    <div class="form-group">
+                        <label>输出帧率</label>
+                        <select class="form-select" id="modal-fps">
+                            <option value="16" selected>16 fps</option>
+                            <option value="24">24 fps</option>
+                            <option value="30">30 fps</option>
+                        </select>
                     </div>
+                    
+                    <div class="process-summary-inline">
+                        <span>待处理: <b id="summary-video-count">0</b> 个视频</span>
+                        <span class="hint">提示词由千问VL自动生成</span>
+                    </div>
+                </div>
+                
+                <!-- 下方：视频缩略图网格 -->
+                <div class="process-video-grid" id="process-video-grid">
+                    <div class="empty-state"><p>暂无待处理视频</p></div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -676,7 +631,7 @@
     <!-- Toast -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=19"></script>
+    <script src="/static/js/app.js?v=81"></script>
     <script>
     // 确保函数全局可用
     window.showProcessModal = showProcessModal;
@@ -727,6 +682,8 @@
     window.handleGalleryUpload = handleGalleryUpload;
     window.selectGalleryFolder = selectGalleryFolder;
     window.deleteGalleryImage = deleteGalleryImage;
+    window.openImageLightbox = openImageLightbox;
+    window.closeLightbox = closeLightbox;
     
     // 调试：点击按钮时输出日志
     document.addEventListener('DOMContentLoaded', function() {

@@ -8,6 +8,10 @@ class Config:
     """基础配置"""
     # Flask 配置
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    
+    # 上传配置 - 优化大文件上传速度
+    MAX_CONTENT_LENGTH = 10 * 1024 * 1024 * 1024  # 10GB 最大上传限制
+    UPLOAD_BUFFER_SIZE = 16 * 1024 * 1024  # 16MB 缓冲区
 
     # API 配置
     API_VERSION = 'v1'

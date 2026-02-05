@@ -3,6 +3,7 @@
 """
 import os
 import shutil
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -11,6 +12,14 @@ import json
 # 图库根目录
 GALLERY_ROOT = Path(os.environ.get("GALLERY_ROOT", "./data/gallery"))
 GALLERY_ROOT.mkdir(parents=True, exist_ok=True)
+
+# 缩略图目录
+THUMBNAIL_DIR = GALLERY_ROOT / ".thumbnails"
+THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+
+# 缩略图配置
+THUMBNAIL_SIZE = (300, 300)  # 最大宽高
+THUMBNAIL_VERSION = "v2"  # 升级缩略图版本，强制重新生成
 
 
 class GalleryService:
@@ -78,8 +87,46 @@ class GalleryService:
         shutil.rmtree(folder_path)
         return True
     
+    def _get_thumbnail_path(self, image_path: Path) -> Path:
+        """获取缩略图路径"""
+        # 使用原图路径的 hash 作为缩略图文件名（包含版本号）
+        hash_input = f"{image_path}:{THUMBNAIL_VERSION}"
+        path_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
+        return THUMBNAIL_DIR / f"{path_hash}.jpg"
+    
+    def _generate_thumbnail(self, image_path: Path) -> Optional[Path]:
+        """生成缩略图"""
+        thumb_path = self._get_thumbnail_path(image_path)
+        
+        # 检查缩略图是否已存在且比原图新
+        if thumb_path.exists():
+            if thumb_path.stat().st_mtime >= image_path.stat().st_mtime:
+                return thumb_path
+        
+        try:
+            from PIL import Image
+            with Image.open(image_path) as img:
+                # 转换为 RGB（处理 RGBA 等格式）
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+                
+                # 生成缩略图（保持比例）
+                img.thumbnail(THUMBNAIL_SIZE, Image.LANCZOS)
+                img.save(thumb_path, 'JPEG', quality=75, optimize=True)
+            return thumb_path
+        except Exception as e:
+            print(f"[Gallery] 生成缩略图失败 {image_path}: {e}")
+            return None
+    
+    def get_thumbnail(self, image_id: str) -> Optional[Path]:
+        """获取图片的缩略图路径"""
+        image_path = GALLERY_ROOT / image_id
+        if not image_path.exists():
+            return None
+        return self._generate_thumbnail(image_path)
+    
     def list_images(self, folder: Optional[str] = None) -> List[Dict[str, Any]]:
-        """列出图片"""
+        """列出图片（排除 .thumbnails 等隐藏目录）"""
         images = []
         
         if folder:
@@ -90,17 +137,35 @@ class GalleryService:
         if not search_path.exists():
             return images
         
+        from PIL import Image
+        
         for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp']:
             pattern = f"**/{ext}" if not folder else ext
             for img_path in search_path.glob(pattern):
                 if img_path.is_file():
+                    # 排除隐藏目录（如 .thumbnails）中的文件
+                    if any(part.startswith('.') for part in img_path.relative_to(GALLERY_ROOT).parts[:-1]):
+                        continue
+                    
                     rel_path = img_path.relative_to(GALLERY_ROOT)
+                    
+                    # 获取图片尺寸（用于瀑布流布局）
+                    width, height = 0, 0
+                    try:
+                        with Image.open(img_path) as img:
+                            width, height = img.size
+                    except Exception:
+                        pass
+                    
                     images.append({
                         'id': str(rel_path),
                         'name': img_path.name,
                         'folder': str(img_path.parent.relative_to(GALLERY_ROOT)) if img_path.parent != GALLERY_ROOT else None,
                         'path': str(img_path),
-                        'url': f"/api/v1/gallery/image/{rel_path}",
+                        'url': f"/api/v1/gallery/image/{rel_path}",  # 原图 URL
+                        'thumb_url': f"/api/v1/gallery/thumbnail/{rel_path}?v={THUMBNAIL_VERSION}",  # 缩略图 URL
+                        'width': width,
+                        'height': height,
                         'size': img_path.stat().st_size,
                         'created_at': datetime.fromtimestamp(img_path.stat().st_mtime).isoformat()
                     })
