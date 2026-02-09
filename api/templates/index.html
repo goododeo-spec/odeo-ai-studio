@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ODEO AI Studio</title>
-    <link rel="stylesheet" href="/static/css/main.css?v=81">
+    <link rel="stylesheet" href="/static/css/main.css?v=115">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -67,7 +67,7 @@
                 <header class="page-header">
                     <h1 class="page-title">模型训练</h1>
                     <div class="page-actions">
-                        <input type="text" class="search-input" placeholder="训练任务名称" id="search-input">
+                        <div class="gpu-indicators-bar" id="home-gpu-indicators"></div>
                     </div>
                 </header>
 
@@ -79,6 +79,7 @@
                         </svg>
                         新建任务
                     </button>
+                    <input type="text" class="search-input" placeholder="搜索任务名称..." id="search-input" style="margin-left: auto;">
                 </div>
 
                 <section class="task-list-section">
@@ -112,7 +113,7 @@
                     <!-- 左侧：训练数据区 -->
                     <section class="data-panel">
                         <div class="panel-header">
-                            <h2>训练数据</h2>
+                            <h2>训练数据 <span class="status-badge-inline" id="training-status-badge" style="display:none;" onclick="openTrainingStatusFromBadge()"></span></h2>
                             <div class="panel-actions">
                                 <div class="process-status" id="process-status" style="display:none;">
                                     <span class="status-spinner"></span>
@@ -121,6 +122,7 @@
                                 <div class="trigger-word-inline">
                                     <label>触发词:</label>
                                     <input type="text" id="trigger-word" class="form-input-sm" placeholder="如: ohwx woman" style="width:150px;">
+                                    <button class="btn-trigger-modify" onclick="modifyTriggerWord()" title="修改所有已处理视频的触发词前缀">修改</button>
                                 </div>
                                 <button class="btn-secondary" onclick="document.getElementById('raw-file-input').click()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
@@ -384,6 +386,7 @@
                 <header class="page-header">
                     <h1 class="page-title">推理测试</h1>
                     <div class="page-actions">
+                        <div class="gpu-indicators-bar" id="infer-gpu-indicators"></div>
                         <button class="btn-primary" onclick="refreshInferenceData()">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                                 <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
@@ -398,6 +401,19 @@
                     <section class="inference-config">
                         <div class="config-section">
                             <h3>1. 选择训练任务</h3>
+                            <div class="task-select-controls">
+                                <div class="task-search-box">
+                                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                    </svg>
+                                    <input type="text" class="task-search-input" id="task-search-input" placeholder="搜索任务名称..." oninput="filterTrainingTasks()">
+                                </div>
+                                <div class="task-filter-tabs">
+                                    <button class="task-filter-tab active" data-filter="all" onclick="filterTrainingTasksByStatus('all')">全部</button>
+                                    <button class="task-filter-tab" data-filter="running" onclick="filterTrainingTasksByStatus('running')">训练中</button>
+                                    <button class="task-filter-tab" data-filter="completed" onclick="filterTrainingTasksByStatus('completed')">已完成</button>
+                                </div>
+                            </div>
                             <div class="task-select-list" id="task-select-list">
                                 <div class="empty-state"><p>加载中...</p></div>
                             </div>
@@ -455,7 +471,7 @@
                                 <label for="infer-auto-caption" style="cursor: pointer; margin: 0;">启用自动描述 (QwenVL)</label>
                             </div>
                             <p class="form-hint" style="margin-top: 4px;">使用 QwenVL 模型自动生成图片描述，首次使用需下载约16GB模型。如不需要，可取消勾选加速推理。</p>
-                            <p class="form-hint">推理将使用 GPU 4-7，系统自动分配空闲 GPU</p>
+                            <p class="form-hint">推理通过 ComfyUI 在 GPU 4-7 并行执行，最多同时运行 4 个任务，超出自动排队</p>
                         </div>
 
                         <div class="config-footer">
@@ -482,11 +498,30 @@
                         </div>
 
                         <div class="inference-history">
-                            <h4>历史记录</h4>
+                            <div class="history-header">
+                                <h4>历史记录</h4>
+                                <div class="history-controls">
+                                    <div class="history-search-box">
+                                        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                        </svg>
+                                        <input type="text" class="history-search-input" id="history-search-input" placeholder="搜索..." oninput="filterInferenceHistory()">
+                                    </div>
+                                    <div class="history-filter-tabs">
+                                        <button class="history-filter-tab active" data-filter="all" onclick="filterInferenceHistoryByStatus('all')">全部</button>
+                                        <button class="history-filter-tab" data-filter="running" onclick="filterInferenceHistoryByStatus('running')">进行中</button>
+                                        <button class="history-filter-tab" data-filter="completed" onclick="filterInferenceHistoryByStatus('completed')">已完成</button>
+                                        <button class="history-filter-tab" data-filter="failed" onclick="filterInferenceHistoryByStatus('failed')">失败</button>
+                                    </div>
+                                </div>
+                            </div>
                             <div class="history-list" id="inference-history-list">
                                 <div class="empty-state small">
                                     <p>暂无历史记录</p>
                                 </div>
+                            </div>
+                            <div class="history-load-more" id="history-load-more" style="display:none;">
+                                <button class="btn-load-more" onclick="loadMoreInferenceHistory()">加载更多</button>
                             </div>
                         </div>
                     </section>
@@ -631,7 +666,7 @@
     <!-- Toast -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/static/js/app.js?v=81"></script>
+    <script src="/static/js/app.js?v=115"></script>
     <script>
     // 确保函数全局可用
     window.showProcessModal = showProcessModal;
@@ -675,6 +710,14 @@
     window.selectModalFolder = selectModalFolder;
     window.handleModalUpload = handleModalUpload;
     window.selectModalImage = selectModalImage;
+    window.filterTrainingTasks = filterTrainingTasks;
+    window.filterTrainingTasksByStatus = filterTrainingTasksByStatus;
+    window.filterInferenceHistory = filterInferenceHistory;
+    window.filterInferenceHistoryByStatus = filterInferenceHistoryByStatus;
+    window.loadMoreInferenceHistory = loadMoreInferenceHistory;
+    window.retryInferenceTask = retryInferenceTask;
+    window.retryBatchInference = retryBatchInference;
+    window.deleteInferenceTask = deleteInferenceTask;
     
     // 图库功能
     window.createGalleryFolder = createGalleryFolder;

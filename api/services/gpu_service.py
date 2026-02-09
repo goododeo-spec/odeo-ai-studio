@@ -31,6 +31,40 @@ class GPUService:
         self._refresh_gpu_cache()
         print(f"GPU Service initialized: found {len(self._gpu_cache)} GPUs")
 
+    def _get_gpu_processes(self) -> Dict[int, int]:
+        """通过 nvidia-smi 获取每个 GPU 上的计算进程显存占用 (MB)"""
+        gpu_used_by_processes: Dict[int, int] = {}
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,used_memory',
+                 '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # 需要 gpu_uuid -> gpu_id 的映射
+                uuid_result = subprocess.run(
+                    ['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader'],
+                    capture_output=True, text=True, timeout=5
+                )
+                uuid_to_id = {}
+                if uuid_result.returncode == 0:
+                    for line in uuid_result.stdout.strip().split('\n'):
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) >= 2:
+                            uuid_to_id[parts[1]] = int(parts[0])
+                
+                for line in result.stdout.strip().split('\n'):
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 3:
+                        gpu_uuid = parts[0]
+                        mem = int(parts[2]) if parts[2].strip().isdigit() else 0
+                        gid = uuid_to_id.get(gpu_uuid)
+                        if gid is not None:
+                            gpu_used_by_processes[gid] = gpu_used_by_processes.get(gid, 0) + mem
+        except Exception:
+            pass
+        return gpu_used_by_processes
+
     def _refresh_gpu_cache(self):
         """刷新 GPU 缓存"""
         try:
@@ -47,6 +81,9 @@ class GPUService:
                 print(f"[GPU] nvidia-smi 返回错误: {result.returncode}")
                 print(f"[GPU] stderr: {result.stderr}")
                 return
+            
+            # 获取实际 GPU 进程占用，用于判断忙闲
+            gpu_processes = self._get_gpu_processes()
             
             gpus = []
             for line in result.stdout.strip().split('\n'):
@@ -71,7 +108,14 @@ class GPUService:
                     with self._lock:
                         current_task = self._active_tasks.get(gpu_id)
                     
-                    status = GPUStatus.TRAINING if current_task else GPUStatus.AVAILABLE
+                    # 判断 GPU 状态：优先看注册任务，其次看实际显存占用（>1GB 视为忙碌）
+                    process_mem = gpu_processes.get(gpu_id, 0)
+                    if current_task:
+                        status = GPUStatus.TRAINING
+                    elif process_mem > 1000:
+                        status = GPUStatus.TRAINING
+                    else:
+                        status = GPUStatus.AVAILABLE
                     
                     gpu = GPUInfo(
                         gpu_id=gpu_id,

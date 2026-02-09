@@ -182,11 +182,13 @@ def _register_error_handlers(app):
             "data": None
         }), 500
 
-# 创建应用实例
-app = create_app(os.environ.get('FLASK_ENV', 'development'))
+# 注意: 不在模块级别创建 app 实例。
+# 通过 gunicorn "app:create_app()" 或 wsgi.py 来创建。
+# 模块级别的 create_app() 会导致服务被初始化两次（浪费资源、可能冲突）。
 
 if __name__ == '__main__':
-    # 开发模式启动
+    # 开发模式直接启动
+    app = create_app(os.environ.get('FLASK_ENV', 'development'))
     port = int(os.environ.get('PORT', 8080))
     app.run(
         host='0.0.0.0',

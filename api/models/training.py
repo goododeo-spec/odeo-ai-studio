@@ -137,6 +137,9 @@ class TrainingTask:
     logs_path: Optional[str] = None
     error_message: Optional[str] = None
     data_task_id: Optional[str] = None  # 数据目录的任务ID（用于关联上传的视频）
+    trigger_word: Optional[str] = None  # 触发词
+    raw_videos: Optional[List[str]] = field(default_factory=list)  # 原始视频列表
+    processed_videos: Optional[List[dict]] = field(default_factory=list)  # 处理后视频列表
 
 @dataclass
 class TrainingTaskRequest:

@@ -155,75 +155,127 @@ def video_to_base64(video_path):
 
 
 def describe_video_with_qwen_vl(video_path, trigger_word=""):
-    """使用 Qwen VL API 描述视频内容（上传完整视频）"""
+    """使用 Qwen VL API 描述视频内容（帧提取模式）"""
+    print(f"[Preprocess] 开始处理视频（帧提取模式）: {video_path}", flush=True)
+    return _describe_video_by_frames(video_path, trigger_word)
+
+
+def _extract_video_frames(video_path, num_frames=8):
+    """从视频中均匀提取指定数量的帧，返回 base64 JPEG 列表"""
+    frames = []
     try:
-        print(f"[Preprocess] 开始处理视频: {video_path}", flush=True)
+        # 获取视频总帧数
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-count_packets",
+            "-show_entries", "stream=nb_read_packets",
+            "-of", "csv=p=0",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        total_frames = int(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else 100
         
-        # 将视频转为 base64
-        video_base64 = video_to_base64(video_path)
-        if not video_base64:
-            print(f"[Preprocess] 无法读取视频: {video_path}", flush=True)
-            return None
-        
-        print(f"[Preprocess] 视频已转换为 base64", flush=True)
-        
-        # 构建 Qwen VL API 请求
-        headers = {
-            "Authorization": f"Bearer {QWEN_VL_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        # 提示词
-        text_prompt = """描述视频中角色的外貌、发型、身材、着装，以及背景环境、物品。
-- 不要描述角色的姿势、动作
-输出规则：仅输出英文、单段、≤300 characters，不要任何解释/标题/列表/JSON/前缀，不要有任何描述以外的废话。"""
-        
-        payload = {
-            "model": "qwen-vl-max",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "video",
-                            "video": video_base64
-                        },
-                        {
-                            "type": "text",
-                            "text": text_prompt
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        print(f"[Preprocess] 调用 Qwen VL API: {os.path.basename(video_path)}", flush=True)
-        
-        response = requests.post(QWEN_VL_API_URL, headers=headers, json=payload, timeout=120)
-        
-        print(f"[Preprocess] API 响应状态: {response.status_code}", flush=True)
-        
-        if response.status_code == 200:
-            result = response.json()
-            description = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-            
-            if description:
-                # 添加触发词前缀
-                if trigger_word and trigger_word.strip():
-                    description = f"{trigger_word.strip()}, {description}"
-                print(f"[Preprocess] Qwen VL 生成描述: {description[:100]}...", flush=True)
-                return description
-            else:
-                print(f"[Preprocess] Qwen VL 返回空描述", flush=True)
+        # 计算采样间隔
+        if total_frames <= num_frames:
+            frame_indices = list(range(total_frames))
         else:
-            print(f"[Preprocess] Qwen VL API 错误: {response.status_code}", flush=True)
-            print(f"[Preprocess] 错误详情: {response.text[:500]}", flush=True)
-            
+            step = total_frames / num_frames
+            frame_indices = [int(step * i) for i in range(num_frames)]
+        
+        print(f"[Preprocess] 视频总帧数: {total_frames}, 采样帧: {frame_indices}", flush=True)
+        
+        for idx in frame_indices:
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-vf", f"select=eq(n\\,{idx})",
+                    "-vframes", "1",
+                    "-q:v", "3",
+                    tmp_path
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                    with open(tmp_path, 'rb') as f:
+                        frame_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    frames.append(f"data:image/jpeg;base64,{frame_b64}")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+        
+        print(f"[Preprocess] 成功提取 {len(frames)} 帧", flush=True)
     except Exception as e:
-        import traceback
-        print(f"[Preprocess] Qwen VL API 调用失败: {e}", flush=True)
-        traceback.print_exc()
+        print(f"[Preprocess] 帧提取失败: {e}", flush=True)
     
+    return frames
+
+
+def _describe_video_by_frames(video_path, trigger_word=""):
+    """使用帧提取模式描述视频（主要打标方式）"""
+    
+    headers = {
+        "Authorization": f"Bearer {QWEN_VL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    text_prompt = """These are frames extracted from a video. Based on all frames, describe the character's appearance, hairstyle, body type, clothing, as well as the background environment and objects.
+- Do NOT describe poses or actions.
+Output rules: English only, single paragraph, ≤300 characters, no explanations/titles/lists/JSON/prefixes, nothing beyond the description itself."""
+    
+    # 多轮尝试：先用 8 帧，若被内容审查拦截则逐步减少帧数重试
+    for attempt, num_frames in enumerate([8, 4, 1], start=1):
+        try:
+            frames = _extract_video_frames(video_path, num_frames=num_frames)
+            if not frames:
+                print(f"[Preprocess] 无法提取帧 (尝试 {attempt}, {num_frames}帧)", flush=True)
+                continue
+            
+            content = []
+            for frame_url in frames:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": frame_url}
+                })
+            content.append({"type": "text", "text": text_prompt})
+            
+            payload = {
+                "model": "qwen-vl-max",
+                "messages": [{"role": "user", "content": content}]
+            }
+            
+            print(f"[Preprocess] 调用 Qwen VL API (帧提取模式, 尝试 {attempt}, {len(frames)}帧)", flush=True)
+            response = requests.post(QWEN_VL_API_URL, headers=headers, json=payload, timeout=120)
+            
+            if response.status_code == 200:
+                result = response.json()
+                description = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                if description:
+                    if trigger_word and trigger_word.strip():
+                        description = f"{trigger_word.strip()}, {description}"
+                    print(f"[Preprocess] 帧提取模式描述 (尝试 {attempt}): {description[:100]}...", flush=True)
+                    return description
+                else:
+                    print(f"[Preprocess] API 返回空描述 (尝试 {attempt})", flush=True)
+            else:
+                error_text = response.text[:500]
+                print(f"[Preprocess] 帧提取模式 API 错误 (尝试 {attempt}): {response.status_code}", flush=True)
+                print(f"[Preprocess] 错误详情: {error_text}", flush=True)
+                
+                # 如果是内容审查拦截，减少帧数重试
+                if "data_inspection_failed" in error_text or "inappropriate" in error_text:
+                    print(f"[Preprocess] ⚠ 内容审查拦截，将减少帧数重试...", flush=True)
+                    continue
+                else:
+                    # 其他错误不再重试
+                    break
+                    
+        except Exception as e:
+            print(f"[Preprocess] 帧提取模式失败 (尝试 {attempt}): {e}", flush=True)
+    
+    print(f"[Preprocess] ✗ 所有尝试均失败: {os.path.basename(video_path)}", flush=True)
     return None
 
 
@@ -563,15 +615,17 @@ def process_videos():
                 subprocess.run(cmd_convert, check=True, capture_output=True, timeout=300)
                 print(f"[Preprocess] 视频转换完成: {output_video}")
                 
-                # 2. 使用转换后的视频调用 Qwen VL 生成描述
+                # 2. 使用帧提取模式调用 Qwen VL 生成描述
                 caption = None
+                caption_failed = False
                 if use_qwen_vl:
-                    # 使用转换后的视频（16fps）而不是原始视频
                     caption = describe_video_with_qwen_vl(output_video, trigger_word)
                 
-                # 如果 Qwen VL 失败，使用默认模板
+                # 如果 Qwen VL 失败，标记失败并使用空描述占位
                 if not caption:
+                    caption_failed = True
                     caption = generate_default_caption(trigger_word)
+                    print(f"[Preprocess] ⚠ 视频 {video['filename']} 打标失败，使用默认文案", flush=True)
                 
                 # 3. 保存提示词
                 with open(output_txt, 'w', encoding='utf-8') as f:
@@ -581,7 +635,8 @@ def process_videos():
                     'index': i,
                     'original': video['filename'],
                     'output': f"{i}.mp4",
-                    'caption': caption[:100] + '...' if len(caption) > 100 else caption
+                    'caption': caption[:100] + '...' if len(caption) > 100 else caption,
+                    'caption_failed': caption_failed
                 })
                 
             except subprocess.TimeoutExpired:
@@ -654,6 +709,115 @@ def update_caption():
             f.write(caption.strip())
         
         return jsonify(create_response(code=200, message="已保存", data={'filename': filename}))
+    except Exception as e:
+        return jsonify(create_response(code=500, message=str(e), data=None)), 500
+
+
+@preprocess_bp.route('/translate', methods=['POST'])
+def translate_caption():
+    """翻译提示词（英译中）"""
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        if not text:
+            return jsonify(create_response(code=400, message="文本不能为空", data=None)), 400
+
+        headers = {
+            "Authorization": f"Bearer {QWEN_VL_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "qwen-plus",
+            "messages": [
+                {"role": "system", "content": "你是一个翻译助手。将用户给出的英文翻译为中文，只输出翻译结果，不要任何解释。"},
+                {"role": "user", "content": text}
+            ]
+        }
+        response = requests.post(QWEN_VL_API_URL, headers=headers, json=payload, timeout=30)
+        if response.status_code == 200:
+            result = response.json()
+            translated = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            return jsonify(create_response(code=200, message="翻译成功", data={'translated': translated}))
+        else:
+            return jsonify(create_response(code=500, message=f"翻译API错误: {response.status_code}", data=None)), 500
+    except Exception as e:
+        return jsonify(create_response(code=500, message=str(e), data=None)), 500
+
+
+@preprocess_bp.route('/recaption', methods=['POST'])
+def recaption_video():
+    """重新打标：使用帧提取模式调用 QwenVL 重新生成提示词"""
+    try:
+        data = request.get_json()
+        filename = data.get('filename')
+        trigger_word = data.get('trigger_word', '')
+        task_id = data.get('task_id')
+
+        if not filename:
+            return jsonify(create_response(code=400, message="文件名不能为空", data=None)), 400
+
+        dataset_path = get_task_dataset_path(task_id)
+        video_path = os.path.join(dataset_path, filename)
+        if not os.path.exists(video_path):
+            return jsonify(create_response(code=404, message="视频不存在", data=None)), 404
+
+        print(f"[Preprocess] 重新打标（帧提取模式）: {filename}", flush=True)
+
+        # 使用帧提取模式调用 QwenVL 重新打标
+        caption = describe_video_with_qwen_vl(video_path, trigger_word)
+        if not caption:
+            return jsonify(create_response(code=500, message="Qwen VL 打标失败，请重试", data={'filename': filename})), 500
+
+        # 保存提示词
+        txt_path = os.path.join(dataset_path, filename.replace('.mp4', '.txt'))
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(caption.strip())
+
+        return jsonify(create_response(code=200, message="重新打标完成", data={'filename': filename, 'caption': caption}))
+    except Exception as e:
+        return jsonify(create_response(code=500, message=str(e), data=None)), 500
+
+
+@preprocess_bp.route('/batch-replace-trigger', methods=['POST'])
+def batch_replace_trigger():
+    """批量替换已处理视频的触发词前缀"""
+    try:
+        data = request.get_json()
+        old_trigger = data.get('old_trigger', '').strip()
+        new_trigger = data.get('new_trigger', '').strip()
+        task_id = data.get('task_id')
+
+        if not new_trigger:
+            return jsonify(create_response(code=400, message="新触发词不能为空", data=None)), 400
+
+        dataset_path = get_task_dataset_path(task_id)
+        updated = 0
+        for file in sorted(os.listdir(dataset_path)):
+            if file.endswith('.txt'):
+                txt_path = os.path.join(dataset_path, file)
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+
+                # 替换旧触发词前缀
+                if old_trigger and content.startswith(old_trigger):
+                    content = content[len(old_trigger):].lstrip(', ').lstrip()
+                    content = f"{new_trigger}, {content}" if content else new_trigger
+                elif old_trigger == '':
+                    # 没有旧触发词，直接在前面加
+                    content = f"{new_trigger}, {content}" if content else new_trigger
+                else:
+                    # 旧触发词不匹配，也直接替换第一个逗号前的部分
+                    parts = content.split(',', 1)
+                    if len(parts) > 1:
+                        content = f"{new_trigger}, {parts[1].strip()}"
+                    else:
+                        content = f"{new_trigger}, {content}"
+
+                with open(txt_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                updated += 1
+
+        return jsonify(create_response(code=200, message=f"已更新 {updated} 个文件", data={'updated': updated}))
     except Exception as e:
         return jsonify(create_response(code=500, message=str(e), data=None)), 500
 
@@ -739,7 +903,7 @@ def delete_video(filename):
 
 @preprocess_bp.route('/regenerate-caption', methods=['POST'])
 def regenerate_caption():
-    """重新反推单个视频的提示词"""
+    """重新反推单个视频的提示词（帧提取模式）"""
     try:
         data = request.get_json()
         filename = data.get('filename', '')
@@ -755,26 +919,25 @@ def regenerate_caption():
         if not os.path.exists(video_path):
             return jsonify(create_response(code=404, message=f"视频文件不存在: {filename}", data=None)), 404
         
-        print(f"[Preprocess] 重新反推视频: {filename}")
+        print(f"[Preprocess] 重新反推视频（帧提取模式）: {filename}", flush=True)
         
-        # 使用 Qwen VL 生成描述
+        # 使用帧提取模式生成描述
         caption = describe_video_with_qwen_vl(video_path, trigger_word)
         
         if not caption:
-            # 如果 Qwen VL 失败，使用默认模板
-            caption = generate_default_caption(trigger_word)
+            return jsonify(create_response(code=500, message="Qwen VL 反推失败，请重试", data={'filename': filename})), 500
         
         # 保存提示词
         txt_path = os.path.join(dataset_path, filename.replace('.mp4', '.txt'))
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(caption.strip())
         
-        print(f"[Preprocess] 反推完成: {caption[:50]}...")
+        print(f"[Preprocess] 反推完成: {caption[:50]}...", flush=True)
         
         return jsonify(create_response(code=200, message="反推成功", data={'caption': caption}))
         
     except Exception as e:
-        print(f"[Preprocess] 重新反推失败: {e}")
+        print(f"[Preprocess] 重新反推失败: {e}", flush=True)
         return jsonify(create_response(code=500, message=str(e), data=None)), 500
 
 

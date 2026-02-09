@@ -51,17 +51,20 @@ conda activate lora
 # 检查 gunicorn 是否安装
 if ! command -v gunicorn &> /dev/null; then
     echo "错误: gunicorn 未安装，正在安装..."
-    pip install gunicorn gevent -i https://mirrors.aliyun.com/pypi/simple/
+    pip install gunicorn -i https://mirrors.aliyun.com/pypi/simple/
 fi
 
 # 停止已有的服务
+pkill -f "gunicorn.*app:create_app" 2>/dev/null
 pkill -f "gunicorn.*wsgi:app" 2>/dev/null
 sleep 2
 
 # 启动 Gunicorn 服务
-echo "正在启动 Gunicorn 服务器..."
+echo "正在启动 Gunicorn 服务器 (gthread worker)..."
 echo "访问地址: http://0.0.0.0:8080"
 echo ""
 
 # 使用 gunicorn 配置文件启动
-exec gunicorn --config gunicorn.conf.py wsgi:app
+# 注意: 使用 app:create_app() 工厂模式入口，不走 wsgi.py
+# 这避免了 gevent monkey.patch_all() 与 threading.Thread 的冲突
+exec gunicorn --config gunicorn.conf.py "app:create_app()"

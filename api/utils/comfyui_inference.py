@@ -20,11 +20,14 @@ import hashlib
 from pathlib import Path
 
 # 路径配置
-COMFYUI_URL = "http://127.0.0.1:8188"
+DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
 COMFYUI_INPUT_DIR = Path("/home/disk2/comfyui/input")
 COMFYUI_OUTPUT_DIR = Path("/home/disk2/comfyui/output")
 COMFYUI_LORAS_DIR = Path("/home/disk2/comfyui/models/loras")
 WORKFLOW_PATH = Path("/home/disk2/comfyui/user/default/workflows/wanvideo_2_1_14B_I2V_odeo.json")
+
+# 运行时使用的 ComfyUI URL（由 --comfyui_url 参数或 gpu 映射决定）
+COMFYUI_URL = DEFAULT_COMFYUI_URL
 
 # 节点 ID 映射（对应 wanvideo_2_1_14B_I2V_odeo.json）
 NODE_LOAD_IMAGE = "58"        # LoadImage - 输入图片
@@ -63,6 +66,8 @@ def parse_args():
                         help='Number of sampling steps')
     parser.add_argument('--cfg', type=float, default=1.0,
                         help='CFG scale')
+    parser.add_argument('--comfyui_url', type=str, default=None,
+                        help='ComfyUI server URL (e.g. http://127.0.0.1:8189). If not set, uses gpu-based mapping.')
     
     return parser.parse_args()
 
@@ -431,14 +436,15 @@ def create_api_prompt(lora_name, trigger_word, image_name, lora_strength=1.0, se
     return api_prompt
 
 
-def queue_prompt(prompt, client_id=None):
+def queue_prompt(prompt, client_id=None, comfyui_url=None):
     """向 ComfyUI 提交 prompt"""
+    url = comfyui_url or COMFYUI_URL
     p = {"prompt": prompt}
     if client_id:
         p["client_id"] = client_id
     
     data = json.dumps(p).encode('utf-8')
-    response = requests.post(f"{COMFYUI_URL}/prompt", data=data, headers={'Content-Type': 'application/json'})
+    response = requests.post(f"{url}/prompt", data=data, headers={'Content-Type': 'application/json'})
     
     if response.status_code != 200:
         raise Exception(f"提交任务失败: {response.status_code} - {response.text}")
@@ -446,21 +452,22 @@ def queue_prompt(prompt, client_id=None):
     return response.json()
 
 
-def get_history(prompt_id):
+def get_history(prompt_id, comfyui_url=None):
     """获取任务历史"""
-    response = requests.get(f"{COMFYUI_URL}/history/{prompt_id}")
+    url = comfyui_url or COMFYUI_URL
+    response = requests.get(f"{url}/history/{prompt_id}")
     if response.status_code == 200:
         return response.json()
     return None
 
 
-def wait_for_completion(prompt_id, timeout=1800):
+def wait_for_completion(prompt_id, timeout=1800, comfyui_url=None):
     """等待任务完成"""
     start_time = time.time()
     last_print = 0
     
     while time.time() - start_time < timeout:
-        history = get_history(prompt_id)
+        history = get_history(prompt_id, comfyui_url=comfyui_url)
         if history and prompt_id in history:
             return history[prompt_id]
         
@@ -475,10 +482,16 @@ def wait_for_completion(prompt_id, timeout=1800):
 
 
 def main():
+    global COMFYUI_URL
     args = parse_args()
     
-    # 设置 CUDA 设备 (注意：ComfyUI 可能有自己的设备管理)
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
+    # 确定 ComfyUI URL：优先使用 --comfyui_url 参数，否则根据 GPU 映射
+    if args.comfyui_url:
+        COMFYUI_URL = args.comfyui_url
+    else:
+        # GPU 4 -> 8188, GPU 5 -> 8189, GPU 6 -> 8190, GPU 7 -> 8191
+        port = 8188 + (args.gpu - 4)
+        COMFYUI_URL = f"http://127.0.0.1:{port}"
     
     # 确定是否使用自动描述
     use_auto_caption = args.use_auto_caption and not args.no_auto_caption
@@ -492,6 +505,7 @@ def main():
     print(f"[Inference] ---")
     print(f"[Inference] LoRA 强度: {args.lora_strength}")
     print(f"[Inference] GPU: {args.gpu}")
+    print(f"[Inference] ComfyUI: {COMFYUI_URL}")
     print(f"[Inference] 自动描述: {'启用' if use_auto_caption else '禁用'}")
     print(f"[Inference] 帧数: {args.num_frames}, 步数: {args.steps}, CFG: {args.cfg}")
     
@@ -539,7 +553,7 @@ def main():
         print(f"[Inference] 调试文件: {debug_path}")
         
         # 提交任务
-        result = queue_prompt(api_prompt)
+        result = queue_prompt(api_prompt, comfyui_url=COMFYUI_URL)
         prompt_id = result.get('prompt_id')
         if not prompt_id:
             raise Exception(f"提交任务失败: {result}")
@@ -548,7 +562,7 @@ def main():
         print(f"[Inference] progress: 20%")
         
         # 等待完成
-        history = wait_for_completion(prompt_id)
+        history = wait_for_completion(prompt_id, comfyui_url=COMFYUI_URL)
         print(f"[Inference] progress: 90%")
         
         # 检查是否有错误

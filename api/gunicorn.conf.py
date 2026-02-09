@@ -19,8 +19,12 @@ bind = "0.0.0.0:8080"
 # 使用单 worker 避免多进程内存不同步问题
 # 训练/推理等长时间任务使用后台线程处理，不影响性能
 workers = 1
-worker_class = "gevent"  # 使用 gevent 异步 worker
-worker_connections = 1000  # 每个 worker 的最大并发连接数
+# 注意: 不能使用 gevent worker！
+# gevent 的 monkey.patch_all() 会把 threading.Thread 转为 greenlet，
+# 导致应用中的后台线程（队列处理、LoRA监控、状态同步等）在 worker 初始化阶段卡死。
+# gthread 使用真正的线程，与应用的 threading 模型完全兼容。
+worker_class = "gthread"  # 使用线程 worker，兼容 threading.Thread
+threads = 8  # 每个 worker 的线程数，支持并发请求
 
 # 超时配置（大文件上传需要更长时间）
 timeout = 600  # 10 分钟超时
@@ -43,6 +47,8 @@ proc_name = "odeo-ai-studio"
 # 预加载应用（加快启动）
 preload_app = False
 
-# 最大请求数后重启 worker（防止内存泄漏）
-max_requests = 1000
-max_requests_jitter = 100
+# 禁用 max_requests：训练子进程的 stdout 管道绑定在 worker 上，
+# worker 重启会导致管道断裂（SIGPIPE），静默杀死训练进程。
+# 即使后续改为日志直写文件，也建议保持禁用以确保稳定性。
+max_requests = 0
+max_requests_jitter = 0

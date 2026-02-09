@@ -18,8 +18,8 @@ export INFERENCE_OUTPUT_ROOT=/home/disk2/lora_training/outputs/inference
 export LORA_ROOT=/home/disk2/lora_training/outputs
 export QWEN_VL_API_KEY="sk-3fee7787593f4a3e95f338e8303033c8"
 
-nohup gunicorn --config gunicorn.conf.py wsgi:app > /tmp/api_output.log 2>&1 &
-sleep 4
+nohup gunicorn --config gunicorn.conf.py "app:create_app()" > /tmp/api_output.log 2>&1 &
+sleep 8
 
 echo "=== 检查服务状态 ==="
 ps aux | grep gunicorn | grep -v grep

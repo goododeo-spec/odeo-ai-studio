@@ -1,7 +1,9 @@
 """
 训练任务相关 API 路由
 """
-from flask import Blueprint, request, jsonify
+import re
+from pathlib import Path
+from flask import Blueprint, request, jsonify, send_file
 from typing import Optional
 
 from services.training_service import training_service
@@ -11,6 +13,62 @@ from models.training import (
 )
 
 training_bp = Blueprint('training', __name__, url_prefix='/api/v1/training')
+
+
+def _extract_trigger_word(task):
+    """提取触发词：优先使用 task.trigger_word，否则从 description 中提取"""
+    tw = getattr(task, 'trigger_word', '') or ''
+    if tw:
+        return tw
+    desc = getattr(task, 'description', '') or ''
+    m = re.match(r'^\d+_\d+_(.+)$', desc)
+    if m:
+        return m.group(1)
+    return ''
+
+
+def _build_metrics(task):
+    """构建 metrics 数据，已完成任务也从日志解析 step_losses"""
+    if not task.metrics:
+        # 即使没有 metrics 对象，也尝试从日志解析
+        if task.status.value in ('completed', 'failed', 'stopped'):
+            step_losses = training_service.parse_log_losses(task.task_id)
+            if step_losses:
+                return {
+                    "current_loss": step_losses[-1],
+                    "best_loss": min(step_losses),
+                    "learning_rate": None,
+                    "grad_norm": None,
+                    "epoch_loss": None,
+                    "best_epoch": None,
+                    "epoch_losses": [],
+                    "step_losses": step_losses
+                }
+        return None
+    
+    step_losses = task.metrics.step_losses if task.metrics else []
+    
+    # 已完成/失败/停止的任务，如果 step_losses 为空则从日志解析
+    if not step_losses and task.status.value in ('completed', 'failed', 'stopped'):
+        step_losses = training_service.parse_log_losses(task.task_id)
+        # 缓存回 task.metrics 以免重复解析
+        if step_losses and task.metrics:
+            task.metrics.step_losses = step_losses
+            if not task.metrics.current_loss:
+                task.metrics.current_loss = step_losses[-1]
+            if not task.metrics.best_loss:
+                task.metrics.best_loss = min(step_losses)
+    
+    return {
+        "current_loss": task.metrics.current_loss if task.metrics else None,
+        "best_loss": task.metrics.best_loss if task.metrics else None,
+        "learning_rate": task.metrics.learning_rate if task.metrics else None,
+        "grad_norm": task.metrics.grad_norm if task.metrics else None,
+        "epoch_loss": task.metrics.epoch_loss if task.metrics else None,
+        "best_epoch": task.metrics.best_epoch if task.metrics else None,
+        "epoch_losses": task.metrics.epoch_losses if task.metrics else [],
+        "step_losses": step_losses
+    }
 
 
 def _get_system_stats(task):
@@ -298,6 +356,65 @@ def restart_training(task_id):
             data=None
         )), 500
 
+@training_bp.route('/resume/<task_id>', methods=['POST'])
+def resume_training(task_id):
+    """
+    断点续训 - 从最近的 checkpoint 恢复训练
+    """
+    try:
+        response = training_service.resume_task(task_id)
+        
+        response_data = {
+            "task_id": response.task_id,
+            "status": response.status.value,
+            "gpu_id": response.gpu_id,
+            "gpu_name": response.gpu_name,
+            "queue_position": getattr(response, 'queue_position', 0)
+        }
+        
+        return jsonify(create_response(
+            code=200,
+            message="断点续训已启动",
+            data=response_data
+        ))
+    except ValueError as e:
+        return jsonify(create_response(
+            code=400,
+            message=str(e),
+            data=None
+        )), 400
+    except Exception as e:
+        return jsonify(create_response(
+            code=500,
+            message=f"断点续训失败: {str(e)}",
+            data=None
+        )), 500
+
+@training_bp.route('/<task_id>/checkpoints', methods=['GET'])
+def get_checkpoints(task_id):
+    """
+    获取任务的 checkpoint 列表
+    """
+    try:
+        checkpoints = training_service.get_task_checkpoints(task_id)
+        return jsonify(create_response(
+            code=200,
+            message="获取成功",
+            data={"checkpoints": checkpoints}
+        ))
+    except ValueError as e:
+        return jsonify(create_response(
+            code=404,
+            message=str(e),
+            data=None
+        )), 404
+    except Exception as e:
+        return jsonify(create_response(
+            code=500,
+            message=f"获取 checkpoint 失败: {str(e)}",
+            data=None
+        )), 500
+
 @training_bp.route('/list', methods=['GET'])
 def list_training():
     """
@@ -477,16 +594,7 @@ def get_training(task_id):
                 "eta_seconds": task.progress.eta_seconds if task.progress else None,
                 "training_time": task.progress.training_time if task.progress else None
             } if task.progress else None,
-            "metrics": {
-                "current_loss": task.metrics.current_loss if task.metrics else None,
-                "best_loss": task.metrics.best_loss if task.metrics else None,
-                "learning_rate": task.metrics.learning_rate if task.metrics else None,
-                "grad_norm": task.metrics.grad_norm if task.metrics else None,
-                "epoch_loss": task.metrics.epoch_loss if task.metrics else None,
-                "best_epoch": task.metrics.best_epoch if task.metrics else None,
-                "epoch_losses": task.metrics.epoch_losses if task.metrics else [],
-                "step_losses": task.metrics.step_losses if task.metrics else []
-            } if task.metrics else None,
+            "metrics": _build_metrics(task),
             "system_stats": _get_system_stats(task),
             "checkpoints": [
                 {
@@ -505,8 +613,9 @@ def get_training(task_id):
             "logs_path": task.logs_path,
             "error_message": task.error_message,
             "dataset": task.dataset,
-            "raw_videos": getattr(task, 'raw_videos', []),
-            "processed_videos": getattr(task, 'processed_videos', [])
+            "raw_videos": task.raw_videos or [],
+            "processed_videos": task.processed_videos or [],
+            "trigger_word": _extract_trigger_word(task)
         }
 
         return jsonify(create_response(
@@ -880,3 +989,100 @@ def delete_task(task_id):
         return jsonify(create_response(code=404, message=str(e), data=None)), 404
     except Exception as e:
         return jsonify(create_response(code=500, message=f"删除任务失败: {str(e)}", data=None)), 500
+
+
+@training_bp.route('/<task_id>/epochs', methods=['GET'])
+def list_task_epochs(task_id):
+    """
+    列出训练任务的所有 epoch LoRA 模型
+    
+    返回可下载的 epoch 列表，包括文件名、大小、路径
+    """
+    try:
+        task = training_service.get_training_task(task_id)
+        
+        import os
+        output_root = Path(os.environ.get("TRAINING_OUTPUT_ROOT", "./data/outputs"))
+        task_dir = output_root / task_id
+        
+        if not task_dir.exists():
+            return jsonify(create_response(
+                code=200,
+                message="success",
+                data={'epochs': [], 'total': 0}
+            ))
+        
+        epochs = []
+        for run_dir in task_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            for epoch_dir in sorted(run_dir.iterdir()):
+                if not epoch_dir.is_dir() or not epoch_dir.name.startswith('epoch'):
+                    continue
+                lora_file = epoch_dir / 'adapter_model.safetensors'
+                if lora_file.exists():
+                    epoch_num = int(epoch_dir.name.replace('epoch', ''))
+                    epochs.append({
+                        'epoch': epoch_num,
+                        'name': f'epoch{epoch_num}',
+                        'filename': f'{task_id}_epoch{epoch_num}_adapter_model.safetensors',
+                        'size_mb': round(lora_file.stat().st_size / (1024 * 1024), 2),
+                        'path': str(lora_file),
+                        'created_at': lora_file.stat().st_mtime
+                    })
+        
+        epochs.sort(key=lambda x: x['epoch'])
+        
+        return jsonify(create_response(
+            code=200,
+            message="success",
+            data={'epochs': epochs, 'total': len(epochs)}
+        ))
+        
+    except ValueError as e:
+        return jsonify(create_response(code=404, message=str(e))), 404
+    except Exception as e:
+        return jsonify(create_response(code=500, message=f"获取 epoch 列表失败: {str(e)}")), 500
+
+
+@training_bp.route('/<task_id>/epoch/<int:epoch_num>/download', methods=['GET'])
+def download_epoch_lora(task_id, epoch_num):
+    """
+    下载指定 epoch 的 LoRA 模型文件
+    """
+    try:
+        task = training_service.get_training_task(task_id)
+        
+        import os
+        output_root = Path(os.environ.get("TRAINING_OUTPUT_ROOT", "./data/outputs"))
+        task_dir = output_root / task_id
+        
+        if not task_dir.exists():
+            return jsonify(create_response(code=404, message="任务目录不存在")), 404
+        
+        # 搜索指定 epoch 的 LoRA 文件
+        lora_file = None
+        for run_dir in task_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            epoch_dir = run_dir / f'epoch{epoch_num}'
+            if epoch_dir.exists():
+                candidate = epoch_dir / 'adapter_model.safetensors'
+                if candidate.exists():
+                    lora_file = candidate
+                    break
+        
+        if not lora_file:
+            return jsonify(create_response(code=404, message=f"epoch{epoch_num} 的 LoRA 文件不存在")), 404
+        
+        download_name = f'{task_id}_epoch{epoch_num}_adapter_model.safetensors'
+        return send_file(
+            str(lora_file),
+            as_attachment=True,
+            download_name=download_name
+        )
+        
+    except ValueError as e:
+        return jsonify(create_response(code=404, message=str(e))), 404
+    except Exception as e:
+        return jsonify(create_response(code=500, message=f"下载失败: {str(e)}")), 500

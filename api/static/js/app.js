@@ -72,6 +72,7 @@ function saveAppState() {
             currentPage: State.currentPage,
             currentDataTab: State.currentDataTab,
             currentTaskId: State.currentTaskId,
+            isNewTask: State.isNewTask,
             
             // 推理页面状态
             inferState: {
@@ -101,6 +102,15 @@ function saveAppState() {
             // 训练页面配置 tabs
             configTab: document.querySelector('.config-panel .tab.active')?.dataset?.tab || 'basic',
             
+            // 触发词
+            triggerWord: document.getElementById('trigger-word')?.value || '',
+            
+            // 训练配置参数
+            trainingConfig: getCurrentConfigFromForm(),
+            
+            // 任务名称
+            taskName: document.getElementById('task-name')?.value || '',
+            
             // 保存时间戳
             savedAt: Date.now()
         };
@@ -126,7 +136,6 @@ function loadSavedState() {
 async function restoreAppState() {
     const saved = loadSavedState();
     if (!saved) {
-        // 没有保存的状态，使用默认页面
         showHomePage();
         return;
     }
@@ -135,8 +144,9 @@ async function restoreAppState() {
     State.currentPage = saved.currentPage || 'home';
     State.currentDataTab = saved.currentDataTab || 'raw';
     State.currentTaskId = saved.currentTaskId || null;
+    State.isNewTask = saved.isNewTask || false;
     
-    // 恢复推理状态（InferState 可能还未定义，在后面恢复）
+    // 恢复推理状态
     if (saved.inferState && typeof InferState !== 'undefined') {
         Object.assign(InferState, saved.inferState);
     }
@@ -145,26 +155,39 @@ async function restoreAppState() {
     const page = saved.currentPage;
     
     if (page === 'training') {
-        // 训练页面（旧的两页面结构）
         showTrainingPage();
     } else if (page === 'home') {
         showHomePage();
     } else if (page === 'inference' || page === 'gallery') {
-        // 新的导航结构
         await navigateTo(page);
-        
-        // 恢复推理参数
         if (page === 'inference' && saved.inferParams) {
             restoreInferParams(saved.inferParams);
         }
-        
-        // 恢复推理页面选中状态
         if (page === 'inference' && saved.inferState) {
             await restoreInferenceState(saved.inferState);
         }
     } else {
-        // 默认回到主页
         showHomePage();
+    }
+    
+    // 不再从 localStorage 覆盖触发词
+    // 非新建任务时由 loadTaskData 从 API 加载正确的触发词
+    // 新建任务时已在 showTrainingPage 中清空
+    
+    // 恢复任务名称（在 loadTaskData 之后覆盖，仅对新任务有效）
+    if (saved.taskName && State.isNewTask) {
+        const tn = document.getElementById('task-name');
+        if (tn) tn.value = saved.taskName;
+    }
+    
+    // 恢复训练配置（如果不是从后端加载的任务，用 localStorage 的配置覆盖）
+    if (saved.trainingConfig && State.isNewTask) {
+        applyConfigToForm(saved.trainingConfig);
+    }
+    
+    // 恢复 data tab（已处理 / 原始视频）
+    if (saved.currentDataTab) {
+        setTimeout(() => switchDataTab(saved.currentDataTab), 200);
     }
     
     // 恢复 config tab
@@ -177,9 +200,7 @@ async function restoreAppState() {
 }
 
 function restoreInferParams(params) {
-    if (params.prompt && document.getElementById('infer-prompt')) {
-        document.getElementById('infer-prompt').value = params.prompt;
-    }
+    // 不恢复 prompt/trigger_word，由 selectTrainingTask 或 restoreInferenceState 根据选中任务自动填入
     if (params.loraStrength && document.getElementById('infer-lora-strength')) {
         document.getElementById('infer-lora-strength').value = params.loraStrength;
     }
@@ -241,6 +262,18 @@ async function restoreInferenceState(inferState) {
                 const task = InferState.trainingTasks?.find(t => t.task_id === InferState.selectedTask);
                 if (task) {
                     renderEpochGrid(task.epochs);
+                    // 自动填入该任务的触发词
+                    const promptInput = document.getElementById('infer-prompt');
+                    if (promptInput) {
+                        let tw = task.trigger_word || '';
+                        if (!tw && task.task_name) {
+                            const parts = task.task_name.split('_');
+                            if (parts.length >= 3 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+                                tw = parts.slice(2).join('_');
+                            }
+                        }
+                        if (tw) promptInput.value = tw;
+                    }
                 }
             }
         }
@@ -332,12 +365,17 @@ const API = {
     getProcessedVideos: (taskId) => API.request(`/preprocess/list${taskId ? '?task_id=' + taskId : ''}`),
     getArBuckets: (taskId) => API.request(`/preprocess/ar-buckets${taskId ? '?task_id=' + taskId : ''}`),
     updateCaption: (data) => API.request('/preprocess/caption', { method: 'PUT', body: JSON.stringify(data) }),
+    translateCaption: (data) => API.request('/preprocess/translate', { method: 'POST', body: JSON.stringify(data) }),
+    recaptionVideo: (data) => API.request('/preprocess/recaption', { method: 'POST', body: JSON.stringify(data) }),
+    batchReplaceTrigger: (data) => API.request('/preprocess/batch-replace-trigger', { method: 'POST', body: JSON.stringify(data) }),
     deleteVideo: (filename, taskId) => API.request(`/preprocess/video/${filename}${taskId ? '?task_id=' + taskId : ''}`, { method: 'DELETE' }),
     deleteRawVideo: (filename, taskId) => API.request(`/preprocess/raw/${filename}${taskId ? '?task_id=' + taskId : ''}`, { method: 'DELETE' }),
     getFrame: (filename, frameNumber, taskId) => `/api/v1/preprocess/frame/${encodeURIComponent(filename)}?frame=${frameNumber}${taskId ? '&task_id=' + taskId : ''}`,
     saveDraft: (data) => API.request('/training/draft', { method: 'POST', body: JSON.stringify(data) }),
     copyTask: (taskId, newName) => API.request('/training/copy', { method: 'POST', body: JSON.stringify({ task_id: taskId, new_name: newName }) }),
-    restartTask: (taskId) => API.request(`/training/restart/${taskId}`, { method: 'POST' })
+    restartTask: (taskId) => API.request(`/training/restart/${taskId}`, { method: 'POST' }),
+    resumeTask: (taskId) => API.request(`/training/resume/${taskId}`, { method: 'POST' }),
+    getCheckpoints: (taskId) => API.request(`/training/${taskId}/checkpoints`)
 };
 
 // Frame buckets: 4n+1 from 1 to 121
@@ -492,11 +530,23 @@ function toast(msg, type = 'info') {
 // ============================================
 // Page Navigation
 // ============================================
-function showHomePage(skipConfirm = false) {
-    // 检查是否有未保存的更改
-    if (!skipConfirm && State.isDirty && State.isNewTask) {
-        if (!confirm('当前任务有未保存的更改，确定要返回主页吗？未保存的数据将丢失。')) {
+async function showHomePage(skipConfirm = false) {
+    // 如果正在处理数据，提示用户处理会在后台继续
+    if (State.isProcessing) {
+        if (!confirm('数据正在处理中，返回主页后处理将在后台继续。是否返回？')) {
             return;
+        }
+    }
+    
+    // 如果有未保存的更改，自动保存为草稿
+    if (State.isDirty || State.isNewTask) {
+        const taskName = document.getElementById('task-name')?.value?.trim();
+        if (taskName && State.currentTaskId) {
+            try {
+                await autoSaveDraftSilently();
+            } catch (e) {
+                console.warn('自动保存草稿失败:', e);
+            }
         }
     }
     
@@ -510,6 +560,7 @@ function showHomePage(skipConfirm = false) {
     State.currentPage = 'home';
     localStorage.setItem('currentPage', 'home');
     loadTasks();
+    loadGpus();
     autoSaveState();
 }
 
@@ -525,11 +576,18 @@ function showTrainingPage() {
         // 新建任务：加载上次配置，设置任务名称，清空视频
         applyConfigToForm(loadLastConfig());
         document.getElementById('task-name').value = generateTaskName();
+        // 清空触发词（新任务不继承上次的触发词）
+        const twInput = document.getElementById('trigger-word');
+        if (twInput) twInput.value = '';
         // 清空视频状态
         State.rawVideos = [];
         State.processedVideos = [];
         updateRawVideoDisplay();
         updateProcessedDisplay();
+        // 默认切换到原始视频 tab
+        switchDataTab('raw');
+        // 隐藏训练状态标签
+        updateTrainingStatusBadge(null);
     } else if (State.currentTaskId) {
         // 编辑已有任务：加载任务数据
         loadTaskData(State.currentTaskId);
@@ -561,6 +619,11 @@ function switchDataTab(tab) {
     const tabContent = document.getElementById(`tab-${tab}`);
     if (tabBtn) tabBtn.classList.add('active');
     if (tabContent) tabContent.classList.add('active');
+    // 切换到已处理 tab 时重新计算所有 textarea 高度
+    if (tab === 'processed') {
+        requestAnimationFrame(autoResizeAllTextareas);
+    }
+    autoSaveState();
 }
 
 // ============================================
@@ -696,6 +759,12 @@ async function loadTaskData(taskId) {
             loadProcessedVideos();
         }
         
+        // 恢复触发词
+        if (task.trigger_word) {
+            const tw = document.getElementById('trigger-word');
+            if (tw) tw.value = task.trigger_word;
+        }
+        
         // AR buckets
         if (task.dataset?.ar_buckets) {
             const arInput = document.getElementById('ar-buckets');
@@ -703,8 +772,50 @@ async function loadTaskData(taskId) {
         }
         
         renderGpus();
+        
+        // 更新训练状态标签
+        updateTrainingStatusBadge(task.status, task.description);
+        
+        // 延迟重算 textarea 高度（确保视频/tab 都已渲染）
+        setTimeout(autoResizeAllTextareas, 800);
     }
 }
+
+// 更新训练数据旁边的训练状态标签
+function updateTrainingStatusBadge(status, taskName) {
+    const badge = document.getElementById('training-status-badge');
+    if (!badge) return;
+    
+    if (!status || status === 'draft') {
+        badge.style.display = 'none';
+        return;
+    }
+    
+    const statusMap = { 
+        'queued': '排队中', 
+        'running': '训练中', 
+        'completed': '已完成', 
+        'failed': '报错', 
+        'stopped': '已停止'
+    };
+    
+    badge.textContent = statusMap[status] || status;
+    badge.className = `status-badge-inline ${status}`;
+    badge.style.display = 'inline-block';
+    badge.title = '点击查看训练状态';
+    // 保存当前任务名称用于弹窗
+    badge.dataset.taskName = taskName || '';
+}
+
+// 从训练数据页的状态标签打开训练状态弹窗
+function openTrainingStatusFromBadge() {
+    if (State.currentTaskId) {
+        const badge = document.getElementById('training-status-badge');
+        const taskName = badge?.dataset?.taskName || '';
+        showTrainingStatus(State.currentTaskId, taskName);
+    }
+}
+window.openTrainingStatusFromBadge = openTrainingStatusFromBadge;
 
 // 新建任务
 function startNewTraining() {
@@ -808,8 +919,16 @@ function selectGpu(id) {
 }
 
 function renderGpuIndicators() {
-    const c = document.getElementById('gpu-indicators');
-    if (c) c.innerHTML = State.gpus.map(g => `<div class="gpu-dot ${g.status}"></div>`).join('');
+    const dotsHtml = State.gpus.map(g => {
+        const isAvail = g.status === 'available';
+        return `<div class="gpu-dot ${g.status}" title="GPU ${g.gpu_id}: ${isAvail ? '空闲' : '使用中'}"></div>`;
+    }).join('');
+    
+    // 渲染到所有 GPU 指示器容器
+    ['gpu-indicators', 'home-gpu-indicators', 'infer-gpu-indicators'].forEach(id => {
+        const c = document.getElementById(id);
+        if (c) c.innerHTML = dotsHtml;
+    });
 }
 
 // ============================================
@@ -1069,7 +1188,7 @@ function updateProcessedDisplay() {
     if (countEl) countEl.textContent = State.processedVideos.length;
     
     if (State.processedVideos.length > 0) {
-        if (list) { list.style.display = 'block'; renderProcessedVideos(); }
+        if (list) { list.style.display = 'grid'; renderProcessedVideos(); }
         if (empty) empty.style.display = 'none';
     } else {
         if (list) list.style.display = 'none';
@@ -1087,19 +1206,45 @@ function renderProcessedVideos() {
                 <video src="/api/v1/preprocess/video/${v.filename}${taskParam}" muted loop onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
                 <div class="card-filename">${v.filename}</div>
             </div>
-            <div class="card-caption">
-                <textarea id="caption-${i}" onchange="markChanged(${i})" placeholder="输入提示词...">${v.caption || ''}</textarea>
-            </div>
-            <div class="card-actions">
-                <button class="btn-icon" onclick="saveCaption(${i}, '${v.filename}')" title="保存">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
-                </button>
-                <button class="btn-icon btn-icon-danger" onclick="deleteProcessedVideo('${v.filename}')" title="删除">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3,6 5,6 21,6"/><path d="M19,6v14a2,2 0 01-2,2H7a2,2 0 01-2-2V6m3,0V4a2,2 0 012-2h4a2,2 0 012,2v2"/></svg>
-                </button>
+            <div class="card-body">
+                <div class="card-caption">
+                    <textarea id="caption-${i}" onchange="markChanged(${i})" oninput="autoResizeTextarea(this)" placeholder="输入提示词...">${v.caption || ''}</textarea>
+                </div>
+                <div class="card-actions">
+                    <button class="btn-icon" onclick="saveCaption(${i}, '${v.filename}')" title="保存">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
+                    </button>
+                    <button class="btn-icon" id="btn-translate-${i}" onclick="toggleTranslate(${i})" title="翻译">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M5 8l6 6"/><path d="M4 14l6-6 2-3"/><path d="M2 5h12"/><path d="M7 2v3"/><path d="M22 22l-5-10-5 10"/><path d="M14 18h6"/></svg>
+                    </button>
+                    <button class="btn-icon" onclick="recaptionVideo(${i}, '${v.filename}')" title="重新打标">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
+                    </button>
+                    <button class="btn-icon btn-icon-danger" onclick="deleteProcessedVideo('${v.filename}')" title="删除">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="3,6 5,6 21,6"/><path d="M19,6v14a2,2 0 01-2,2H7a2,2 0 01-2-2V6m3,0V4a2,2 0 012-2h4a2,2 0 012,2v2"/></svg>
+                    </button>
+                </div>
             </div>
         </div>
     `).join('');
+    
+    // 延迟自适应 textarea 高度
+    requestAnimationFrame(autoResizeAllTextareas);
+    setTimeout(autoResizeAllTextareas, 500);
+}
+
+// 文本框自适应高度
+function autoResizeTextarea(el) {
+    if (!el || !el.offsetParent) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight + 2, 120) + 'px';
+}
+
+// 批量调整
+function autoResizeAllTextareas() {
+    document.querySelectorAll('.processed-card textarea').forEach(el => {
+        autoResizeTextarea(el);
+    });
 }
 
 function markChanged(id) {
@@ -1138,6 +1283,126 @@ async function deleteProcessedVideo(filename) {
         }
     } catch (e) {
         toast(`删除失败: ${e.message}`, 'error');
+    }
+}
+
+// 一键翻译（英译中），再次点击返回原文
+const _translateCache = {};
+async function toggleTranslate(id) {
+    const textarea = document.getElementById(`caption-${id}`);
+    const btn = document.getElementById(`btn-translate-${id}`);
+    if (!textarea) return;
+
+    // 如果当前是翻译态，切换回原文
+    if (textarea.dataset.translated === 'true') {
+        textarea.value = textarea.dataset.original;
+        textarea.readOnly = false;
+        textarea.dataset.translated = 'false';
+        if (btn) btn.classList.remove('btn-translate-active');
+        return;
+    }
+
+    // 保存原文
+    const original = textarea.value;
+    textarea.dataset.original = original;
+
+    // 有缓存就直接用
+    if (_translateCache[original]) {
+        textarea.value = _translateCache[original];
+        textarea.readOnly = true;
+        textarea.dataset.translated = 'true';
+        if (btn) btn.classList.add('btn-translate-active');
+        return;
+    }
+
+    textarea.value = '翻译中...';
+    textarea.readOnly = true;
+    try {
+        const res = await API.translateCaption({ text: original });
+        if (res.code === 200 && res.data?.translated) {
+            _translateCache[original] = res.data.translated;
+            textarea.value = res.data.translated;
+            textarea.dataset.translated = 'true';
+            if (btn) btn.classList.add('btn-translate-active');
+        } else {
+            textarea.value = original;
+            textarea.readOnly = false;
+            toast('翻译失败', 'error');
+        }
+    } catch (e) {
+        textarea.value = original;
+        textarea.readOnly = false;
+        toast(`翻译失败: ${e.message}`, 'error');
+    }
+}
+
+// 重新打标（QwenVL + 触发词）
+async function recaptionVideo(id, filename) {
+    const textarea = document.getElementById(`caption-${id}`);
+    const translateBtn = document.getElementById(`btn-translate-${id}`);
+    if (!textarea) return;
+    // 恢复原文编辑态
+    textarea.readOnly = false;
+    textarea.dataset.translated = 'false';
+    if (translateBtn) translateBtn.classList.remove('btn-translate-active');
+
+    const triggerWord = document.getElementById('trigger-word')?.value || '';
+    textarea.value = '正在重新打标...';
+    textarea.classList.add('recaptioning');
+    try {
+        const res = await API.recaptionVideo({ filename, trigger_word: triggerWord, task_id: State.currentTaskId });
+        textarea.classList.remove('recaptioning');
+        if (res.code === 200 && res.data?.caption) {
+            textarea.value = res.data.caption;
+            // 同步更新 State
+            if (State.processedVideos[id]) {
+                State.processedVideos[id].caption = res.data.caption;
+            }
+            markDirty();
+            toast('打标完成', 'success');
+        } else {
+            throw new Error(res.message || '打标失败');
+        }
+    } catch (e) {
+        textarea.classList.remove('recaptioning');
+        textarea.value = '';
+        toast(`打标失败: ${e.message}`, 'error');
+    }
+}
+
+// 批量修改触发词
+async function modifyTriggerWord() {
+    const input = document.getElementById('trigger-word');
+    if (!input) return;
+    const newTrigger = input.value.trim();
+    if (!newTrigger) {
+        toast('请先输入触发词', 'warning');
+        return;
+    }
+
+    // 从第一个已处理视频的 caption 中推测旧触发词
+    let oldTrigger = '';
+    if (State.processedVideos.length > 0) {
+        const firstCaption = State.processedVideos[0].caption || '';
+        const commaIdx = firstCaption.indexOf(',');
+        if (commaIdx > 0) {
+            oldTrigger = firstCaption.substring(0, commaIdx).trim();
+        }
+    }
+
+    if (!confirm(`将所有已处理视频的触发词从「${oldTrigger || '(无)'}」修改为「${newTrigger}」？`)) return;
+
+    try {
+        const res = await API.batchReplaceTrigger({ old_trigger: oldTrigger, new_trigger: newTrigger, task_id: State.currentTaskId });
+        if (res.code === 200) {
+            toast(`已更新 ${res.data.updated} 个文件`, 'success');
+            markDirty();
+            loadProcessedVideos();
+        } else {
+            throw new Error(res.message);
+        }
+    } catch (e) {
+        toast(`修改失败: ${e.message}`, 'error');
     }
 }
 
@@ -1302,7 +1567,8 @@ async function saveDraft() {
                 directory: [{ path: CONFIG.datasetPath, num_repeats: formValues.dataset_config.directory.num_repeats }]
             },
             raw_videos: State.rawVideos.map(v => v.filename),
-            processed_videos: State.processedVideos.map(v => ({ filename: v.filename, caption: v.caption }))
+            processed_videos: State.processedVideos.map(v => ({ filename: v.filename, caption: v.caption })),
+            trigger_word: document.getElementById('trigger-word')?.value?.trim() || ''
         };
         
         const res = await API.saveDraft(draftData);
@@ -1320,6 +1586,39 @@ async function saveDraft() {
         }
     } catch (e) {
         toast(`保存失败: ${e.message}`, 'error');
+    }
+}
+
+// 静默自动保存草稿（返回主页时调用，不弹 toast）
+async function autoSaveDraftSilently() {
+    let name = document.getElementById('task-name')?.value?.trim();
+    if (!name) name = generateTaskName();
+    
+    const formValues = getFormValues();
+    const draftData = {
+        task_id: State.currentTaskId,
+        description: name,
+        model_type: 'wan',
+        gpu_id: State.selectedGpu,
+        config: formValues,
+        dataset: {
+            resolutions: formValues.dataset_config.resolutions,
+            enable_ar_bucket: formValues.dataset_config.enable_ar_bucket,
+            ar_buckets: formValues.dataset_config.ar_buckets,
+            frame_buckets: formValues.dataset_config.frame_buckets,
+            directory: [{ path: CONFIG.datasetPath, num_repeats: formValues.dataset_config.directory.num_repeats }]
+        },
+        raw_videos: State.rawVideos.map(v => v.filename),
+        processed_videos: State.processedVideos.map(v => ({ filename: v.filename, caption: v.caption })),
+        trigger_word: document.getElementById('trigger-word')?.value?.trim() || ''
+    };
+    
+    const res = await API.saveDraft(draftData);
+    if (res.code === 201 || res.code === 200) {
+        console.log('[autoSave] 草稿已自动保存');
+        if (res.data?.task_id) {
+            State.currentTaskId = res.data.task_id;
+        }
     }
 }
 
@@ -1355,15 +1654,11 @@ function showTrainingStatus(taskId, taskName) {
                     </div>
                     <div class="status-card">
                         <div class="card-label">GPU</div>
-                        <div class="card-value" id="status-gpu">-</div>
+                        <div class="card-value"><span id="status-gpu">-</span> <span id="status-memory" style="font-size:11px;color:var(--text-muted);"></span></div>
                     </div>
                     <div class="status-card">
                         <div class="card-label">Epoch</div>
                         <div class="card-value" id="status-epoch">0 / -</div>
-                    </div>
-                    <div class="status-card">
-                        <div class="card-label">显存</div>
-                        <div class="card-value" id="status-memory">-</div>
                     </div>
                 </div>
                 
@@ -1376,6 +1671,12 @@ function showTrainingStatus(taskId, taskName) {
                     </div>
                 </div>
                 
+                <div class="error-message-section" id="error-message-section" style="display:none;">
+                    <div style="padding: 10px 14px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; color: #f87171; font-size: 13px; line-height: 1.5;">
+                        <span style="font-weight: 600;">错误信息: </span><span id="error-message-text"></span>
+                    </div>
+                </div>
+
                 <div class="loss-chart-section">
                     <div class="chart-header">
                         <h4>Loss 曲线</h4>
@@ -1383,6 +1684,16 @@ function showTrainingStatus(taskId, taskName) {
                     </div>
                     <div class="loss-chart" id="loss-chart">
                         <canvas id="loss-canvas" width="540" height="160"></canvas>
+                    </div>
+                </div>
+
+                <div class="epoch-models-section" id="epoch-models-section" style="display:none;">
+                    <div class="chart-header">
+                        <h4>LoRA 模型</h4>
+                        <span class="epoch-count" id="epoch-model-count">0 个</span>
+                    </div>
+                    <div class="epoch-model-list" id="epoch-model-list">
+                        <div class="log-placeholder">加载中...</div>
                     </div>
                 </div>
                 
@@ -1440,6 +1751,14 @@ async function fetchTrainingStatus(taskId) {
             updateTrainingLogs(logsRes.data.logs);
         }
     } catch (e) {}
+    
+    // 加载 epoch 模型列表
+    try {
+        const epochsRes = await API.request(`/training/${taskId}/epochs`);
+        if (epochsRes.code === 200 && epochsRes.data) {
+            updateEpochModelList(epochsRes.data.epochs || [], taskId);
+        }
+    } catch (e) {}
 }
 
 function updateLogContainer(logs) {
@@ -1495,35 +1814,58 @@ function updateTrainingStatusUI(data) {
     
     if (memoryEl && data.system_stats?.gpu_memory) {
         const mem = data.system_stats.gpu_memory;
-        memoryEl.textContent = `${mem.used || 0} / ${mem.total || 0} MB`;
+        const usedGB = (mem.used / 1024).toFixed(1);
+        const totalGB = (mem.total / 1024).toFixed(1);
+        memoryEl.textContent = `(${usedGB}/${totalGB} GB)`;
     }
     
-    // Loss 处理
-    if (data.metrics?.current_loss != null) {
+    // Loss 处理 —— 优先使用后端返回的完整 step_losses
+    if (data.metrics?.step_losses?.length > 0) {
+        const stepLosses = data.metrics.step_losses;
+        const latestLoss = stepLosses[stepLosses.length - 1];
+        if (lossValueEl) lossValueEl.textContent = `当前: ${latestLoss.toFixed(4)}`;
+        
+        // 用完整的 step_losses 替换前端缓存
+        State.lossHistory = stepLosses.map((loss, i) => ({ step: i + 1, loss }));
+        drawLossChart();
+    } else if (data.metrics?.current_loss != null) {
         const loss = data.metrics.current_loss;
         if (lossValueEl) lossValueEl.textContent = `当前: ${loss.toFixed(4)}`;
-        
-        // 添加到历史
-        const step = data.progress?.current_step || State.lossHistory.length;
-        if (State.lossHistory.length === 0 || State.lossHistory[State.lossHistory.length - 1].step !== step) {
-            State.lossHistory.push({ step, loss });
-            if (State.lossHistory.length > 100) State.lossHistory.shift();
-            drawLossChart();
+    }
+    
+    // 显示/隐藏错误信息
+    const errorSection = document.getElementById('error-message-section');
+    const errorText = document.getElementById('error-message-text');
+    if (errorSection && errorText) {
+        if (data.error_message && ['failed', 'stopped'].includes(data.status)) {
+            errorText.textContent = data.error_message;
+            errorSection.style.display = 'block';
+        } else {
+            errorSection.style.display = 'none';
         }
     }
-    
+
     if (['completed', 'failed', 'stopped'].includes(data.status)) {
+        // 只在状态轮询中检测到完成时显示 toast（避免打开已完成任务的弹窗时重复提示）
+        if (statusPollInterval) {
+            if (data.status === 'completed') toast('训练完成！', 'success');
+            else if (data.status === 'failed') toast(`训练失败: ${data.error_message || '未知错误'}`, 'error');
+        }
         stopStatusPolling();
-        if (data.status === 'completed') toast('训练完成！', 'success');
-        else if (data.status === 'failed') toast(`训练失败: ${data.error_message || '未知错误'}`, 'error');
     }
     
-    // 更新footer按钮 - 失败/停止的任务显示重新提交按钮
+    // 更新footer按钮
     const footer = document.querySelector('.status-footer');
     if (footer && data.task_id) {
         if (['failed', 'stopped'].includes(data.status)) {
             footer.innerHTML = `
-                <button class="btn-primary" onclick="restartTraining('${data.task_id}')">重新提交</button>
+                <button class="btn-primary" onclick="resumeTraining('${data.task_id}')">断点续训</button>
+                <button class="btn-secondary" onclick="restartTraining('${data.task_id}')">重新训练</button>
+                <button class="btn-secondary" onclick="hideTrainingStatus()">关闭</button>
+            `;
+        } else if (data.status === 'completed') {
+            footer.innerHTML = `
+                <button class="btn-primary" onclick="resumeTraining('${data.task_id}')">断点续训</button>
                 <button class="btn-secondary" onclick="hideTrainingStatus()">关闭</button>
             `;
         } else if (['running', 'queued'].includes(data.status)) {
@@ -1537,6 +1879,40 @@ function updateTrainingStatusUI(data) {
             `;
         }
     }
+}
+
+function updateEpochModelList(epochs, taskId) {
+    const section = document.getElementById('epoch-models-section');
+    const container = document.getElementById('epoch-model-list');
+    const countEl = document.getElementById('epoch-model-count');
+    
+    if (!section || !container) return;
+    
+    if (!epochs || epochs.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    section.style.display = 'block';
+    if (countEl) countEl.textContent = `${epochs.length} 个`;
+    
+    container.innerHTML = epochs.map(ep => {
+        const sizeMB = ep.size_mb ? ep.size_mb.toFixed(1) : '?';
+        return `
+            <div class="epoch-model-item">
+                <div class="epoch-model-info">
+                    <span class="epoch-model-name">epoch${ep.epoch}</span>
+                    <span class="epoch-model-size">${sizeMB} MB</span>
+                </div>
+                <a class="btn-epoch-download" href="/api/v1/training/${taskId}/epoch/${ep.epoch}/download" title="下载 LoRA 模型">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                </a>
+            </div>`;
+    }).join('');
 }
 
 function drawLossChart() {
@@ -1670,6 +2046,24 @@ async function restartTraining(taskId) {
 }
 window.restartTraining = restartTraining;
 
+async function resumeTraining(taskId) {
+    if (!confirm('确定要从最近的 checkpoint 断点续训吗？')) return;
+    
+    try {
+        const res = await API.resumeTask(taskId);
+        if (res.code === 200) {
+            toast('断点续训已启动', 'success');
+            // 清除 config 中的 resume 标记（仅影响本次启动）
+            showTrainingStatus(taskId);
+        } else {
+            throw new Error(res.message);
+        }
+    } catch (e) {
+        toast(`断点续训失败: ${e.message}`, 'error');
+    }
+}
+window.resumeTraining = resumeTraining;
+
 // ============================================
 // 推理功能
 // ============================================
@@ -1699,6 +2093,9 @@ async function navigateTo(page) {
     localStorage.setItem('currentPage', page);
     autoSaveState();
     
+    // 所有页面都加载 GPU 状态（用于顶栏指示器）
+    loadGpus();
+    
     if (page === 'inference') {
         await loadInferenceData();
     } else if (page === 'home') {
@@ -1722,6 +2119,10 @@ async function refreshInferenceData() {
     toast('刷新完成', 'success');
 }
 
+// 训练任务筛选状态
+let taskFilterStatus = 'all';
+let taskSearchKeyword = '';
+
 async function loadTrainingTasksWithLoras() {
     const container = document.getElementById('task-select-list');
     if (!container) return;
@@ -1732,37 +2133,79 @@ async function loadTrainingTasksWithLoras() {
         const res = await API.request('/inference/tasks-with-loras');
         if (res.code === 200 && res.data?.tasks) {
             InferState.trainingTasks = res.data.tasks;
-            
-            if (res.data.tasks.length === 0) {
-                container.innerHTML = '<div class="empty-state"><p>暂无训练任务</p><p class="hint">请先完成模型训练</p></div>';
-                return;
-            }
-            
-            container.innerHTML = res.data.tasks.map(task => {
-                const readyCount = task.epochs.filter(e => e.ready).length;
-                const pendingCount = task.epochs.filter(e => e.pending).length;
-                const statusBadge = getTaskStatusBadge(task.task_status);
-                const metaText = pendingCount > 0 
-                    ? `${readyCount} 个已就绪 · ${pendingCount} 个训练中`
-                    : `${task.epochs.length} 个版本`;
-                return `
-                <div class="task-select-item ${InferState.selectedTask === task.task_id ? 'selected' : ''}" 
-                     onclick="selectTrainingTask('${task.task_id}')">
-                    <div class="task-select-info">
-                        <div class="task-select-header">
-                            <span class="task-select-name">${task.task_name || task.task_id.slice(-12)}</span>
-                            ${statusBadge}
-                        </div>
-                        <span class="task-select-meta">${metaText}</span>
-                    </div>
-                </div>
-            `}).join('');
+            renderTrainingTaskList();
         } else {
             throw new Error(res.message || '获取失败');
         }
     } catch (e) {
         container.innerHTML = `<div class="empty-state error"><p>加载失败: ${e.message}</p></div>`;
     }
+}
+
+function renderTrainingTaskList() {
+    const container = document.getElementById('task-select-list');
+    if (!container) return;
+    
+    let tasks = InferState.trainingTasks || [];
+    
+    // 搜索过滤
+    if (taskSearchKeyword) {
+        const kw = taskSearchKeyword.toLowerCase();
+        tasks = tasks.filter(t => 
+            (t.task_name || '').toLowerCase().includes(kw) || 
+            (t.task_id || '').toLowerCase().includes(kw)
+        );
+    }
+    
+    // 状态过滤
+    if (taskFilterStatus !== 'all') {
+        tasks = tasks.filter(t => t.task_status === taskFilterStatus);
+    }
+    
+    if (tasks.length === 0) {
+        const msg = taskSearchKeyword || taskFilterStatus !== 'all' 
+            ? '没有匹配的任务' 
+            : '暂无训练任务';
+        container.innerHTML = `<div class="empty-state"><p>${msg}</p></div>`;
+        return;
+    }
+    
+    container.innerHTML = tasks.map(task => {
+        const readyCount = task.epochs.filter(e => e.ready).length;
+        const pendingCount = task.epochs.filter(e => e.pending).length;
+        const statusBadge = getTaskStatusBadge(task.task_status);
+        const metaText = pendingCount > 0 
+            ? `${readyCount} 已就绪 · ${pendingCount} 训练中`
+            : `${task.epochs.length} 个版本`;
+        const timeText = task.created_at ? formatDate(task.created_at) : '';
+        return `
+        <div class="task-select-item ${InferState.selectedTask === task.task_id ? 'selected' : ''}" 
+             onclick="selectTrainingTask('${task.task_id}')"
+             data-task-id="${task.task_id}"
+             data-task-status="${task.task_status}">
+            <div class="task-select-info">
+                <div class="task-select-header">
+                    <span class="task-select-name">${task.task_name || task.task_id.slice(-12)}</span>
+                    ${statusBadge}
+                </div>
+                <span class="task-select-meta">${metaText}${timeText ? ' · ' + timeText : ''}</span>
+            </div>
+        </div>
+    `}).join('');
+}
+
+function filterTrainingTasks() {
+    taskSearchKeyword = document.getElementById('task-search-input')?.value?.trim() || '';
+    renderTrainingTaskList();
+}
+
+function filterTrainingTasksByStatus(status) {
+    taskFilterStatus = status;
+    // 更新 tab 激活状态
+    document.querySelectorAll('.task-filter-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.filter === status);
+    });
+    renderTrainingTaskList();
 }
 
 function getTaskStatusBadge(status) {
@@ -1794,6 +2237,22 @@ function selectTrainingTask(taskId) {
     const task = InferState.trainingTasks.find(t => t.task_id === taskId);
     if (task) {
         renderEpochGrid(task.epochs);
+        
+        // 自动填入该训练任务的触发词
+        const promptInput = document.getElementById('infer-prompt');
+        if (promptInput) {
+            let tw = task.trigger_word || '';
+            // 回退：从任务名 MMDD_HHMM_word 中提取
+            if (!tw && task.task_name) {
+                const parts = task.task_name.split('_');
+                if (parts.length >= 3 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+                    tw = parts.slice(2).join('_');
+                }
+            }
+            if (tw) {
+                promptInput.value = tw;
+            }
+        }
     }
     
     autoSaveState();
@@ -2136,6 +2595,10 @@ async function startInference() {
     const readyLoras = InferState.selectedLoras.filter(l => !l.pending && l.path);
     const pendingLoras = InferState.selectedLoras.filter(l => l.pending || !l.path);
     
+    // 获取训练任务名称
+    const selectedTaskData = InferState.trainingTasks.find(t => t.task_id === InferState.selectedTask);
+    const trainingTaskName = selectedTaskData?.task_name || InferState.selectedTask || '';
+    
     // 基础参数
     const baseParams = {
         trigger_word: triggerWord,
@@ -2147,7 +2610,8 @@ async function startInference() {
         guidance_scale: parseFloat(document.getElementById('infer-guidance')?.value) || 1.0,
         seed: parseInt(document.getElementById('infer-seed')?.value) || -1,
         use_auto_caption: document.getElementById('infer-auto-caption')?.checked ?? true,
-        training_task_id: InferState.selectedTask  // 训练任务ID
+        training_task_id: InferState.selectedTask,  // 训练任务ID
+        training_task_name: trainingTaskName        // 训练任务名称
     };
     
     // 生成批次ID
@@ -2227,7 +2691,7 @@ async function startInference() {
             if (scheduledTasks.length > 0) {
                 toast(`已创建 ${allTasks.length} 个立即执行 + ${pendingTaskCount} 个预约推理任务`, 'success');
             } else {
-                toast(`已创建 ${allTasks.length} 个推理任务（GPU 4-7 自动分配）`, 'success');
+                toast(`已创建 ${allTasks.length} 个推理任务，GPU 4-7 自动分配执行`, 'success');
             }
             
             // 保存当前批次信息用于网格展示
@@ -2376,6 +2840,12 @@ function updateResultArea(status, task) {
             <div class="inference-error">
                 <p>推理失败</p>
                 <p class="error-msg">${task.error_message || '未知错误'}</p>
+                <button class="btn-primary" onclick="retryInferenceTask('${task.task_id}')" style="margin-top: 16px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                    重新推理
+                </button>
             </div>
         `;
     }
@@ -2559,104 +3029,273 @@ function toggleEpochVisibility(epochIdx) {
     updateBatchResultArea();
 }
 
+// 推理历史筛选状态
+let historyFilterStatus = 'all';
+let historySearchKeyword = '';
+let historyDisplayCount = 20; // 每次显示的数量
+let allHistoryItems = []; // 缓存所有历史条目（处理后的统一格式）
+
 async function loadInferenceHistory() {
     const container = document.getElementById('inference-history-list');
     if (!container) return;
     
     try {
-        const res = await API.request('/inference/tasks?limit=50');
+        const res = await API.request('/inference/tasks?limit=200');
         if (res.code === 200 && res.data?.tasks) {
             const tasks = res.data.tasks;
             if (tasks.length === 0) {
                 container.innerHTML = '<div class="empty-state small"><p>暂无历史记录</p></div>';
+                updateHistoryLoadMore(0, 0);
                 return;
             }
             
-            // 按 batch_id 分组
-            const batches = {};
-            const singleTasks = [];
-            
-            tasks.forEach(task => {
-                if (task.batch_id) {
-                    if (!batches[task.batch_id]) {
-                        batches[task.batch_id] = [];
-                    }
-                    batches[task.batch_id].push(task);
-                } else {
-                    singleTasks.push(task);
-                }
-            });
-            
-            // 构建历史列表 HTML
-            let html = '';
-            
-            // 先显示批量任务（按最新任务时间排序）
-            const batchEntries = Object.entries(batches)
-                .map(([batchId, batchTasks]) => ({
-                    batchId,
-                    tasks: batchTasks,
-                    latestTime: Math.max(...batchTasks.map(t => new Date(t.created_at).getTime()))
-                }))
-                .sort((a, b) => b.latestTime - a.latestTime)
-                .slice(0, 5); // 只显示最近 5 个批次
-            
-            for (const {batchId, tasks: batchTasks} of batchEntries) {
-                const completedCount = batchTasks.filter(t => t.status === 'completed').length;
-                const runningCount = batchTasks.filter(t => ['queued', 'loading', 'running'].includes(t.status)).length;
-                const failedCount = batchTasks.filter(t => t.status === 'failed').length;
-                const totalCount = batchTasks.length;
-                
-                // 获取 epoch 列表（去重）
-                const epochs = [...new Set(batchTasks.map(t => t.lora_name))];
-                const imageCount = Math.max(...batchTasks.map(t => t.image_index || 0)) + 1;
-                
-                const status = runningCount > 0 ? 'running' : (completedCount === totalCount ? 'completed' : (failedCount > 0 ? 'failed' : 'queued'));
-                const firstTask = batchTasks[0];
-                
-                html += `
-                <div class="history-item batch ${status}" onclick="viewInferenceResult('${firstTask.task_id}', '${batchId}')">
-                    <div class="history-info">
-                        <span class="history-prompt">${epochs.length} Epoch × ${imageCount} 图片</span>
-                        <span class="history-meta">${(firstTask.trigger_word || '').substring(0, 15)} · ${formatDate(firstTask.created_at)}</span>
-                    </div>
-                    <div class="history-actions">
-                        <span class="history-status ${status}">${completedCount}/${totalCount} 完成</span>
-                    </div>
-                </div>`;
-            }
-            
-            // 再显示单个任务（最近 5 个）
-            for (const task of singleTasks.slice(0, 5)) {
-                const isRunning = ['queued', 'loading', 'running'].includes(task.status);
-                const cancelBtn = isRunning ? 
-                    `<button class="btn-cancel-small" onclick="event.stopPropagation(); cancelInferenceTask('${task.task_id}')" title="取消任务">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                    </button>` : '';
-                
-                html += `
-                <div class="history-item ${task.status}" onclick="viewInferenceResult('${task.task_id}')">
-                    <div class="history-info">
-                        <span class="history-prompt">${(task.trigger_word || task.prompt || '').substring(0, 30)}...</span>
-                        <span class="history-meta">${task.lora_name || ''} · ${formatDate(task.created_at)}</span>
-                    </div>
-                    <div class="history-actions">
-                        <span class="history-status ${task.status}">${getInferenceStatusText(task.status)}${isRunning ? ` (${task.progress?.toFixed(0) || 0}%)` : ''}</span>
-                        ${cancelBtn}
-                    </div>
-                </div>`;
-            }
-            
-            container.innerHTML = html || '<div class="empty-state small"><p>暂无历史记录</p></div>';
+            // 将所有任务处理为统一的历史条目
+            allHistoryItems = buildHistoryItems(tasks);
+            historyDisplayCount = 20;
+            renderInferenceHistory();
         }
     } catch (e) {
         console.error('加载历史失败:', e);
     }
 }
 
+function buildHistoryItems(tasks) {
+    // 按 batch_id 分组
+    const batches = {};
+    const singleTasks = [];
+    
+    tasks.forEach(task => {
+        if (task.batch_id) {
+            if (!batches[task.batch_id]) {
+                batches[task.batch_id] = [];
+            }
+            batches[task.batch_id].push(task);
+        } else {
+            singleTasks.push(task);
+        }
+    });
+    
+    const items = [];
+    
+    // 批量任务条目
+    for (const [batchId, batchTasks] of Object.entries(batches)) {
+        const completedCount = batchTasks.filter(t => t.status === 'completed').length;
+        const runningCount = batchTasks.filter(t => ['pending', 'queued', 'loading', 'running'].includes(t.status)).length;
+        const failedCount = batchTasks.filter(t => t.status === 'failed').length;
+        const totalCount = batchTasks.length;
+        const epochs = [...new Set(batchTasks.map(t => t.lora_name))];
+        const imageCount = Math.max(...batchTasks.map(t => t.image_index || 0)) + 1;
+        const status = runningCount > 0 ? 'running' : (completedCount === totalCount ? 'completed' : (failedCount > 0 ? 'failed' : 'queued'));
+        const firstTask = batchTasks[0];
+        
+        // 命名：训练任务名称 + 时间
+        const taskName = firstTask.training_task_name || extractTaskNameFromPath(firstTask.lora_path) || '未知任务';
+        const timeStr = formatDateTime(firstTask.created_at);
+        const displayName = `${taskName} · ${timeStr}`;
+        
+        items.push({
+            type: 'batch',
+            batchId,
+            taskId: firstTask.task_id,
+            displayName,
+            taskName,
+            detail: `${epochs.length} Epoch × ${imageCount} 图片`,
+            status,
+            statusText: `${completedCount}/${totalCount} 完成`,
+            isRunning: runningCount > 0,
+            createdAt: firstTask.created_at,
+            timestamp: new Date(firstTask.created_at).getTime()
+        });
+    }
+    
+    // 单个任务条目
+    for (const task of singleTasks) {
+        const taskName = task.training_task_name || extractTaskNameFromPath(task.lora_path) || '未知任务';
+        const timeStr = formatDateTime(task.created_at);
+        const displayName = `${taskName} · ${timeStr}`;
+        const isRunning = ['pending', 'queued', 'loading', 'running'].includes(task.status);
+        
+        items.push({
+            type: 'single',
+            taskId: task.task_id,
+            displayName,
+            taskName,
+            detail: `${task.lora_name || ''} · ${(task.trigger_word || task.prompt || '').substring(0, 20)}`,
+            status: task.status,
+            statusText: getInferenceStatusText(task.status) + (task.status === 'pending' ? '' : isRunning ? ` (${task.progress?.toFixed(0) || 0}%)` : ''),
+            isRunning,
+            createdAt: task.created_at,
+            timestamp: new Date(task.created_at).getTime()
+        });
+    }
+    
+    // 按时间排序，最新的在前
+    items.sort((a, b) => b.timestamp - a.timestamp);
+    return items;
+}
+
+function extractTaskNameFromPath(loraPath) {
+    if (!loraPath) return '';
+    // 从路径中提取 train_xxx
+    const parts = loraPath.split('/');
+    for (const part of parts) {
+        if (part.startsWith('train_')) {
+            return part.slice(-12);
+        }
+    }
+    return '';
+}
+
+function formatDateTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${month}-${day} ${hours}:${minutes}`;
+}
+
+function renderInferenceHistory() {
+    const container = document.getElementById('inference-history-list');
+    if (!container) return;
+    
+    let items = allHistoryItems;
+    
+    // 搜索过滤
+    if (historySearchKeyword) {
+        const kw = historySearchKeyword.toLowerCase();
+        items = items.filter(item => 
+            item.displayName.toLowerCase().includes(kw) || 
+            item.taskName.toLowerCase().includes(kw) ||
+            (item.detail || '').toLowerCase().includes(kw)
+        );
+    }
+    
+    // 状态过滤
+    if (historyFilterStatus !== 'all') {
+        if (historyFilterStatus === 'running') {
+            items = items.filter(item => ['pending', 'queued', 'loading', 'running'].includes(item.status));
+        } else {
+            items = items.filter(item => item.status === historyFilterStatus);
+        }
+    }
+    
+    if (items.length === 0) {
+        const msg = historySearchKeyword || historyFilterStatus !== 'all' 
+            ? '没有匹配的记录' 
+            : '暂无历史记录';
+        container.innerHTML = `<div class="empty-state small"><p>${msg}</p></div>`;
+        updateHistoryLoadMore(0, 0);
+        return;
+    }
+    
+    // 分页
+    const displayItems = items.slice(0, historyDisplayCount);
+    
+    let html = '';
+    for (const item of displayItems) {
+        // 删除按钮（所有非运行状态的条目都可删除）
+        const deleteBtn = !item.isRunning ?
+            `<button class="btn-delete-small" onclick="event.stopPropagation(); deleteInferenceTask('${item.taskId}', ${item.type === 'batch' ? `'${item.batchId}'` : 'null'})" title="删除任务">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+            </button>` : '';
+        
+        if (item.type === 'batch') {
+            const batchRetryBtn = item.status === 'failed' ?
+                `<button class="btn-retry-small" onclick="event.stopPropagation(); retryBatchInference('${item.batchId}')" title="重试失败任务">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>` : '';
+            
+            html += `
+            <div class="history-item batch ${item.status}" onclick="viewInferenceResult('${item.taskId}', '${item.batchId}')">
+                <div class="history-info">
+                    <span class="history-name">${escapeHtml(item.taskName)}</span>
+                    <span class="history-detail">${item.detail}</span>
+                    <span class="history-time">${formatDateTime(item.createdAt)}</span>
+                </div>
+                <div class="history-actions">
+                    <span class="history-status ${item.status}">${item.statusText}</span>
+                    ${batchRetryBtn}
+                    ${deleteBtn}
+                </div>
+            </div>`;
+        } else {
+            const cancelBtn = item.isRunning ? 
+                `<button class="btn-cancel-small" onclick="event.stopPropagation(); cancelInferenceTask('${item.taskId}')" title="取消任务">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>` : '';
+            
+            const retryBtn = item.status === 'failed' ?
+                `<button class="btn-retry-small" onclick="event.stopPropagation(); retryInferenceTask('${item.taskId}')" title="重新推理">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>` : '';
+            
+            html += `
+            <div class="history-item ${item.status}" onclick="viewInferenceResult('${item.taskId}')">
+                <div class="history-info">
+                    <span class="history-name">${escapeHtml(item.taskName)}</span>
+                    <span class="history-detail">${item.detail}</span>
+                    <span class="history-time">${formatDateTime(item.createdAt)}</span>
+                </div>
+                <div class="history-actions">
+                    <span class="history-status ${item.status}">${item.statusText}</span>
+                    ${retryBtn}
+                    ${cancelBtn}
+                    ${deleteBtn}
+                </div>
+            </div>`;
+        }
+    }
+    
+    container.innerHTML = html;
+    updateHistoryLoadMore(displayItems.length, items.length);
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function updateHistoryLoadMore(displayed, total) {
+    const btn = document.getElementById('history-load-more');
+    if (btn) {
+        btn.style.display = displayed < total ? 'block' : 'none';
+    }
+}
+
+function loadMoreInferenceHistory() {
+    historyDisplayCount += 20;
+    renderInferenceHistory();
+}
+
+function filterInferenceHistory() {
+    historySearchKeyword = document.getElementById('history-search-input')?.value?.trim() || '';
+    historyDisplayCount = 20;
+    renderInferenceHistory();
+}
+
+function filterInferenceHistoryByStatus(status) {
+    historyFilterStatus = status;
+    historyDisplayCount = 20;
+    // 更新 tab 激活状态
+    document.querySelectorAll('.history-filter-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.filter === status);
+    });
+    renderInferenceHistory();
+}
+
 function getInferenceStatusText(status) {
     const map = {
+        pending: '等待LoRA',
         queued: '排队中',
         loading: '加载中',
         running: '推理中',
@@ -2716,6 +3355,106 @@ async function cancelInferenceTask(taskId) {
         }
     } catch (e) {
         toast(`取消失败: ${e.message}`, 'error');
+    }
+}
+
+async function deleteInferenceTask(taskId, batchId) {
+    // batchId 不为 null 时表示这是一个批次条目，需要删除整个批次
+    if (batchId) {
+        try {
+            const res = await API.request(`/inference/tasks?batch_id=${batchId}`);
+            if (res.code !== 200 || !res.data?.tasks) {
+                toast('获取批次任务失败', 'error');
+                return;
+            }
+            const taskCount = res.data.tasks.length;
+            if (!confirm(`确定要删除此批次中的 ${taskCount} 个任务吗？\n删除后无法恢复。`)) return;
+            
+            const taskIds = res.data.tasks.map(t => t.task_id);
+            const delRes = await API.request('/inference/tasks/bulk-delete', {
+                method: 'POST',
+                body: JSON.stringify({ task_ids: taskIds })
+            });
+            if (delRes.code === 200) {
+                toast(`已删除 ${delRes.data?.deleted || taskCount} 个任务`, 'success');
+                loadInferenceHistory();
+            } else {
+                toast(delRes.message || '删除失败', 'error');
+            }
+        } catch (e) {
+            toast(`删除失败: ${e.message}`, 'error');
+        }
+        return;
+    }
+    
+    // 单个任务删除
+    if (!confirm('确定要删除此推理任务吗？\n删除后无法恢复。')) return;
+    
+    try {
+        const res = await API.request(`/inference/task/${taskId}`, { method: 'DELETE' });
+        if (res.code === 200) {
+            toast('任务已删除', 'success');
+            loadInferenceHistory();
+        } else {
+            toast(res.message || '删除失败', 'error');
+        }
+    } catch (e) {
+        toast(`删除失败: ${e.message}`, 'error');
+    }
+}
+
+async function retryInferenceTask(taskId) {
+    if (!confirm('确定要重新推理此任务吗？')) return;
+    
+    try {
+        const res = await API.request(`/inference/task/${taskId}/retry`, { method: 'POST' });
+        if (res.code === 200) {
+            toast('任务已重新排队', 'success');
+            loadInferenceHistory();
+        } else {
+            toast(res.message || '重试失败', 'error');
+        }
+    } catch (e) {
+        toast(`重试失败: ${e.message}`, 'error');
+    }
+}
+
+async function retryBatchInference(batchId) {
+    try {
+        // 获取该批次所有任务
+        const res = await API.request(`/inference/tasks?batch_id=${batchId}`);
+        if (res.code !== 200 || !res.data?.tasks) {
+            toast('获取批次任务失败', 'error');
+            return;
+        }
+        
+        const failedTasks = res.data.tasks.filter(t => t.status === 'failed');
+        if (failedTasks.length === 0) {
+            toast('该批次没有失败的任务', 'info');
+            return;
+        }
+        
+        const msg = `确定要重试该批次中 ${failedTasks.length} 个失败任务吗？\n任务将自动排队依次执行。`;
+        if (!confirm(msg)) return;
+        
+        let successCount = 0;
+        for (const task of failedTasks) {
+            try {
+                const retryRes = await API.request(`/inference/task/${task.task_id}/retry`, { method: 'POST' });
+                if (retryRes.code === 200) successCount++;
+            } catch (e) {
+                console.error(`重试 ${task.task_id} 失败:`, e);
+            }
+        }
+        
+        if (successCount > 0) {
+            toast(`${successCount} 个任务已重新排队`, 'success');
+            loadInferenceHistory();
+        } else {
+            toast('所有重试均失败', 'error');
+        }
+    } catch (e) {
+        toast(`重试失败: ${e.message}`, 'error');
     }
 }
 
@@ -3007,6 +3746,35 @@ document.addEventListener('DOMContentLoaded', () => {
     // 监听 config tabs 变化
     document.querySelectorAll('.config-panel .tab').forEach(tab => {
         tab.addEventListener('click', autoSaveState);
+    });
+    
+    // 触发词输入自动保存
+    const twInput = document.getElementById('trigger-word');
+    if (twInput) {
+        twInput.addEventListener('input', autoSaveState);
+        twInput.addEventListener('change', autoSaveState);
+    }
+    
+    // 训练配置参数变化自动保存
+    const trainingFormInputs = [
+        'task-name', 'epochs-val', 'batch-size-val', 'grad-accum-val', 'grad-clip',
+        'warmup-val', 'save-epochs-val', 'ckpt-epochs-val', 'clip-mode',
+        'blocks-swap-val', 'act-ckpt-mode', 'model-dtype', 'transformer-dtype',
+        'lora-rank-val', 'adapter-dtype', 'resolution', 'ar-bucket',
+        'repeats-val', 'optimizer', 'lr', 'betas', 'weight-decay'
+    ];
+    trainingFormInputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', autoSaveState);
+            if (el.type === 'text' || el.type === 'number' || el.tagName === 'TEXTAREA') {
+                el.addEventListener('input', autoSaveState);
+            }
+        }
+    });
+    // slider 滑块也要同步
+    document.querySelectorAll('.slider-row .slider').forEach(slider => {
+        slider.addEventListener('input', autoSaveState);
     });
     
     // Restore

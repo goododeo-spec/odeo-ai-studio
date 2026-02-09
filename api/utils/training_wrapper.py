@@ -1,10 +1,17 @@
 """
 训练任务包装器
 用于调用原始的train.py脚本，不修改其逻辑
+
+关键设计：
+- 训练子进程使用 start_new_session=True 脱离 API worker 进程组，
+  确保 gunicorn worker 重启不会影响训练进程。
+- 日志直接写入文件（而非通过 stdout 管道），避免管道断裂导致 SIGPIPE。
+- PID 持久化到文件，即使 worker 重启也能追踪训练进程状态。
 """
 import os
 import sys
 import json
+import signal
 import toml
 import subprocess
 import threading
@@ -13,6 +20,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
 
+# 日志和PID文件目录
+LOG_DIR = Path("/tmp/diffusion_pipe_logs")
+PID_DIR = Path("/tmp/diffusion_pipe_pids")
+
+
 class TrainingWrapper:
     """训练任务包装器"""
 
@@ -20,8 +32,12 @@ class TrainingWrapper:
         """初始化训练包装器"""
         self.project_root = Path(__file__).parent.parent.parent
         self.train_script = self.project_root / "train.py"
+        # 内存中的进程引用（仅在当前 worker 生命周期内有效）
         self.processes: Dict[str, subprocess.Popen] = {}
         self._lock = threading.Lock()
+        # 确保目录存在
+        LOG_DIR.mkdir(exist_ok=True)
+        PID_DIR.mkdir(exist_ok=True)
 
     def start_training(
         self,
@@ -73,43 +89,52 @@ class TrainingWrapper:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             env["NCCL_P2P_DISABLE"] = "1"
             env["NCCL_IB_DISABLE"] = "1"
-            env["MASTER_PORT"] = str(master_port)  # 确保 deepspeed 内部也使用正确端口
+            env["MASTER_PORT"] = str(master_port)
             # 添加项目根目录到PYTHONPATH确保模块导入正确（优先于ComfyUI的utils）
             project_root_str = str(self.project_root)
             comfyui_path = str(self.project_root / "submodules" / "ComfyUI")
-            # 项目根目录必须在ComfyUI之前，这样utils.common能正确导入
             pythonpath_parts = [project_root_str, comfyui_path]
             if "PYTHONPATH" in env:
                 pythonpath_parts.append(env["PYTHONPATH"])
             env["PYTHONPATH"] = ":".join(pythonpath_parts)
-            
+
+            # 日志直接写入文件，不通过 stdout 管道
+            log_file = LOG_DIR / f"{task_id}.log"
+            log_f = open(log_file, 'w', encoding='utf-8')
+
             # 启动训练进程
+            # start_new_session=True: 创建新的进程会话，脱离 gunicorn worker 进程组
+            # 这样 worker 被回收/重启时不会影响训练进程
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
+                stdout=log_f,
                 stderr=subprocess.STDOUT,
                 cwd=self.project_root,
                 env=env,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
+                start_new_session=True,  # 关键：脱离 worker 进程组
             )
 
-            # 记录进程
+            # 记录进程到内存
             with self._lock:
                 self.processes[task_id] = process
 
-            # 启动日志线程
+            # 持久化 PID 到文件（跨 worker 重启可追踪）
+            self._save_pid(task_id, process.pid)
+
+            # 启动后台监控线程：等待进程结束后关闭日志文件句柄
             threading.Thread(
-                target=self._log_output,
-                args=(task_id, process),
+                target=self._monitor_process,
+                args=(task_id, process, log_f),
                 daemon=True
             ).start()
 
+            print(f"[{task_id}] 训练进程已启动 PID={process.pid}, 日志: {log_file}")
             return True
 
         except Exception as e:
+            import traceback
             print(f"启动训练任务失败: {e}")
+            traceback.print_exc()
             return False
 
     def stop_training(self, task_id: str, force: bool = False) -> bool:
@@ -123,32 +148,49 @@ class TrainingWrapper:
         Returns:
             是否成功停止
         """
+        # 优先从内存中获取进程引用
         with self._lock:
             process = self.processes.get(task_id)
-            if not process:
-                return False
 
+        if process:
             try:
                 if force:
-                    process.kill()
+                    # 杀死整个进程组（包括 deepspeed 子进程）
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 else:
-                    process.terminate()
-
-                # 等待进程结束
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
                 process.wait(timeout=10)
-
-                # 清理
-                del self.processes[task_id]
-                return True
-
             except subprocess.TimeoutExpired:
-                # 强制杀死
-                process.kill()
-                del self.processes[task_id]
-                return True
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # 进程已结束
             except Exception as e:
                 print(f"停止训练任务失败: {e}")
                 return False
+            finally:
+                with self._lock:
+                    self.processes.pop(task_id, None)
+                self._remove_pid(task_id)
+            return True
+
+        # 内存中没有进程引用（worker 可能已重启），从 PID 文件恢复
+        pid = self._load_pid(task_id)
+        if pid:
+            try:
+                if force:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                else:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # 进程已结束
+            except Exception as e:
+                print(f"通过PID停止训练任务失败: {e}")
+                return False
+            finally:
+                self._remove_pid(task_id)
+            return True
+
+        return False
 
     def get_training_status(self, task_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -160,17 +202,102 @@ class TrainingWrapper:
         Returns:
             训练状态信息
         """
+        # 优先从内存中获取
         with self._lock:
             process = self.processes.get(task_id)
-            if not process:
-                return None
 
+        if process:
+            poll_result = process.poll()
             return {
                 "task_id": task_id,
-                "running": process.poll() is None,
+                "running": poll_result is None,
                 "returncode": process.returncode,
                 "pid": process.pid
             }
+
+        # 内存中没有，从 PID 文件恢复检查
+        pid = self._load_pid(task_id)
+        if pid:
+            running = self._is_pid_running(pid)
+            returncode = None
+            if not running:
+                # 进程已结束，清理 PID 文件
+                self._remove_pid(task_id)
+                returncode = -1  # 无法获取真实返回码，标记为异常退出
+            return {
+                "task_id": task_id,
+                "running": running,
+                "returncode": returncode,
+                "pid": pid
+            }
+
+        return None
+
+    # ==================== PID 持久化 ====================
+
+    def _save_pid(self, task_id: str, pid: int):
+        """保存训练进程 PID 到文件"""
+        pid_file = PID_DIR / f"{task_id}.pid"
+        pid_file.write_text(str(pid))
+
+    def _load_pid(self, task_id: str) -> Optional[int]:
+        """从文件加载训练进程 PID"""
+        pid_file = PID_DIR / f"{task_id}.pid"
+        if pid_file.exists():
+            try:
+                return int(pid_file.read_text().strip())
+            except (ValueError, OSError):
+                return None
+        return None
+
+    def _remove_pid(self, task_id: str):
+        """删除 PID 文件"""
+        pid_file = PID_DIR / f"{task_id}.pid"
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _is_pid_running(pid: int) -> bool:
+        """检查指定 PID 的进程是否仍在运行"""
+        try:
+            os.kill(pid, 0)  # 发送信号 0 不会杀死进程，只检查是否存在
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # 进程存在但无权限
+
+    # ==================== 进程监控 ====================
+
+    def _monitor_process(self, task_id: str, process: subprocess.Popen, log_f):
+        """
+        后台监控线程：等待进程结束后做清理
+
+        Args:
+            task_id: 任务ID
+            process: 进程对象
+            log_f: 日志文件句柄
+        """
+        try:
+            process.wait()
+            returncode = process.returncode
+            print(f"[{task_id}] 训练进程结束, returncode={returncode}")
+        except Exception as e:
+            print(f"[{task_id}] 监控进程异常: {e}")
+        finally:
+            # 关闭日志文件句柄
+            try:
+                log_f.close()
+            except Exception:
+                pass
+            # 清理内存中的进程引用
+            with self._lock:
+                self.processes.pop(task_id, None)
+            # 注意：不在这里删除 PID 文件，留给 training_service 检查后再清理
+
+    # ==================== 配置生成 ====================
 
     def _generate_config_file(
         self,
@@ -226,6 +353,11 @@ class TrainingWrapper:
             "video_clip_mode": config.get("video_clip_mode", "single_beginning"),
         }
         
+        # 断点续训配置
+        resume_from_checkpoint = config.get("resume_from_checkpoint", False)
+        if resume_from_checkpoint:
+            full_config["resume_from_checkpoint"] = True
+
         # 显存优化配置 - blocks_to_swap > 0 时才添加
         blocks_to_swap = config.get("blocks_to_swap", 0)
         if blocks_to_swap > 0:
@@ -324,24 +456,6 @@ class TrainingWrapper:
 
         return cmd
 
-    def _log_output(self, task_id: str, process: subprocess.Popen):
-        """
-        记录输出
 
-        Args:
-            task_id: 任务ID
-            process: 进程对象
-        """
-        log_file = Path(f"/tmp/diffusion_pipe_logs/{task_id}.log")
-        log_file.parent.mkdir(exist_ok=True)
-
-        with open(log_file, 'w', encoding='utf-8') as log_f:
-            for line in process.stdout:
-                log_f.write(line)
-                log_f.flush()
-
-                # 同时打印到控制台
-                print(f"[{task_id}] {line.strip()}")
-
-        # 等待进程结束
-        process.wait()
+# 全局实例（供 training_service 使用）
+training_wrapper = TrainingWrapper()

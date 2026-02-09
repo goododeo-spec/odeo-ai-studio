@@ -427,6 +427,118 @@ def stop_inference_task(task_id):
         return jsonify(create_response(code=500, message=str(e))), 500
 
 
+@inference_bp.route('/task/<task_id>', methods=['DELETE'])
+def delete_inference_task(task_id):
+    """删除推理任务（停止+删除数据+删除输出目录）"""
+    try:
+        success = inference_service.delete_task(task_id)
+        if success:
+            return jsonify(create_response(code=200, message="任务已删除"))
+        else:
+            return jsonify(create_response(code=404, message="任务不存在")), 404
+    except Exception as e:
+        return jsonify(create_response(code=500, message=str(e))), 500
+
+
+@inference_bp.route('/tasks/bulk-delete', methods=['POST'])
+def bulk_delete_inference_tasks():
+    """批量删除推理任务
+    
+    请求体:
+    {
+        "task_ids": ["id1", "id2", ...]           # 方式1: 指定任务ID列表
+    }
+    或
+    {
+        "after_date": "2026-02-07",                # 方式2: 按日期+状态筛选
+        "status": "failed",
+        "keep_one_per_group": true                  # 每组(lora+image)保留最早的一个
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify(create_response(code=400, message="请求体不能为空")), 400
+        
+        task_ids_to_delete = []
+        
+        if 'task_ids' in data:
+            # 方式1: 直接指定
+            task_ids_to_delete = data['task_ids']
+        elif 'after_date' in data:
+            # 方式2: 按条件筛选
+            after_date = data['after_date']
+            status_filter = data.get('status', 'failed')
+            keep_one = data.get('keep_one_per_group', False)
+            
+            all_tasks = inference_service.list_tasks(limit=10000)
+            filtered = []
+            for t in all_tasks:
+                if t.created_at and t.created_at.strftime('%Y-%m-%d') >= after_date:
+                    if t.status.value == status_filter:
+                        filtered.append(t)
+            
+            if keep_one:
+                # 按 lora_path+image_path 分组，每组保留最早的
+                from collections import defaultdict
+                groups = defaultdict(list)
+                for t in filtered:
+                    key = f"{t.lora_path}|{t.image_path}"
+                    groups[key].append(t)
+                
+                for key, tasks in groups.items():
+                    if len(tasks) > 1:
+                        # 按创建时间排序，保留最早的
+                        tasks.sort(key=lambda x: x.created_at or datetime.min)
+                        for t in tasks[1:]:
+                            task_ids_to_delete.append(t.task_id)
+            else:
+                task_ids_to_delete = [t.task_id for t in filtered]
+        else:
+            return jsonify(create_response(code=400, message="需要提供 task_ids 或 after_date")), 400
+        
+        if not task_ids_to_delete:
+            return jsonify(create_response(code=200, message="没有需要删除的任务", data={"deleted": 0}))
+        
+        deleted = inference_service.bulk_delete_tasks(task_ids_to_delete)
+        
+        return jsonify(create_response(
+            code=200,
+            message=f"已删除 {deleted} 个任务",
+            data={"deleted": deleted, "requested": len(task_ids_to_delete)}
+        ))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify(create_response(code=500, message=str(e))), 500
+
+
+@inference_bp.route('/task/<task_id>/retry', methods=['POST'])
+def retry_inference_task(task_id):
+    """重试失败的推理任务 - 重置原任务状态，不创建新任务"""
+    try:
+        task = inference_service.retry_task(task_id)
+        if not task:
+            # 区分任务不存在还是状态不对
+            existing = inference_service.get_task(task_id)
+            if not existing:
+                return jsonify(create_response(code=404, message="任务不存在")), 404
+            return jsonify(create_response(code=400, message="只能重试失败的任务")), 400
+        
+        return jsonify(create_response(
+            code=200,
+            message="任务已重置，正在重新推理",
+            data=task.to_dict()
+        ))
+        
+    except ValueError as e:
+        return jsonify(create_response(code=400, message=str(e))), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify(create_response(code=500, message=f"重试失败: {str(e)}")), 500
+
+
 @inference_bp.route('/output/<task_id>/video', methods=['GET'])
 def get_output_video(task_id):
     """获取推理输出视频"""

@@ -142,13 +142,11 @@ class TrainingService:
                             created_at=datetime.fromisoformat(task_data['created_at']) if task_data.get('created_at') else None,
                             started_at=datetime.fromisoformat(task_data['started_at']) if task_data.get('started_at') else None,
                             completed_at=datetime.fromisoformat(task_data['completed_at']) if task_data.get('completed_at') else None,
-                            logs_path=task_data.get('logs_path')
+                            logs_path=task_data.get('logs_path'),
+                            trigger_word=task_data.get('trigger_word', ''),
+                            raw_videos=task_data.get('raw_videos', []),
+                            processed_videos=task_data.get('processed_videos', [])
                         )
-                        # 加载草稿的额外数据
-                        if 'raw_videos' in task_data:
-                            task.raw_videos = task_data['raw_videos']
-                        if 'processed_videos' in task_data:
-                            task.processed_videos = task_data['processed_videos']
                         self._tasks[task.task_id] = task
                         self._task_locks[task.task_id] = threading.Lock()
                     except Exception as e:
@@ -161,41 +159,58 @@ class TrainingService:
     
     def _sync_task_status(self):
         """同步任务状态 - 检查运行中的任务是否真的在运行"""
-        import subprocess
         from pathlib import Path
+        from utils.training_wrapper import training_wrapper
         
         updated = False
         for task_id, task in self._tasks.items():
             if task.status == TrainingStatus.RUNNING:
-                # 检查是否有对应的训练进程
-                try:
-                    result = subprocess.run(
-                        ['pgrep', '-f', task_id],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    process_exists = result.returncode == 0 and result.stdout.strip()
-                except:
-                    process_exists = False
+                # 优先通过 training_wrapper 检查进程状态（支持 PID 文件恢复）
+                status = training_wrapper.get_training_status(task_id)
+                if status and status.get('running'):
+                    # 进程仍在运行，跳过
+                    print(f"[API] 任务 {task_id} 进程仍在运行 (PID={status.get('pid')})")
+                    continue
                 
-                if not process_exists:
-                    # 进程不存在，检查日志判断状态
-                    log_file = Path(f"/tmp/diffusion_pipe_logs/{task_id}.log")
-                    new_status = TrainingStatus.FAILED  # 默认失败
-                    
-                    if log_file.exists():
-                        try:
-                            content = log_file.read_text(encoding='utf-8', errors='ignore')
-                            if 'TRAINING COMPLETE!' in content:
-                                new_status = TrainingStatus.COMPLETED
-                            elif 'exits with return code = 1' in content or 'Error' in content or 'Traceback' in content:
-                                new_status = TrainingStatus.FAILED
-                        except:
-                            pass
-                    
-                    print(f"[API] 任务 {task_id} 状态更新: running -> {new_status.value}")
-                    task.status = new_status
-                    task.completed_at = datetime.now()
-                    updated = True
+                # 进程不存在或已结束，检查日志判断最终状态
+                log_file = Path(f"/tmp/diffusion_pipe_logs/{task_id}.log")
+                new_status = TrainingStatus.FAILED  # 默认失败
+                error_message = None
+                
+                if log_file.exists():
+                    try:
+                        content = log_file.read_text(encoding='utf-8', errors='ignore')
+                        if 'TRAINING COMPLETE!' in content:
+                            new_status = TrainingStatus.COMPLETED
+                        elif 'exits with return code = 1' in content or 'Traceback' in content:
+                            new_status = TrainingStatus.FAILED
+                            # 提取最后的错误信息
+                            lines = content.strip().split('\n')
+                            error_lines = [l for l in lines[-20:] if 'Error' in l or 'Traceback' in l or 'exit' in l.lower()]
+                            if error_lines:
+                                error_message = f"训练进程异常退出: {error_lines[-1].strip()}"
+                            else:
+                                error_message = "训练进程异常退出，请查看日志获取详情"
+                        elif 'CUDA out of memory' in content or 'OutOfMemoryError' in content:
+                            new_status = TrainingStatus.FAILED
+                            error_message = "GPU 显存不足 (CUDA OOM)，建议增加 blocks_to_swap 或减少视频帧数"
+                        else:
+                            # 日志中没有明确的错误或完成标记
+                            # 检查是否有训练步骤记录 → 进程可能被外部杀死
+                            if 'steps:' in content:
+                                error_message = "训练进程意外终止（可能被系统杀死或 API 服务重启导致），请重新提交任务"
+                            else:
+                                error_message = "训练进程异常退出，未产生训练日志"
+                    except Exception as e:
+                        error_message = f"读取日志失败: {e}"
+                else:
+                    error_message = "训练进程已结束，但未找到日志文件"
+                
+                print(f"[API] 任务 {task_id} 状态更新: running -> {new_status.value}, 原因: {error_message}")
+                task.status = new_status
+                task.error_message = error_message
+                task.completed_at = datetime.now()
+                updated = True
         
         if updated:
             self._save_tasks()
@@ -217,13 +232,11 @@ class TrainingService:
                     'created_at': task.created_at.isoformat() if task.created_at else None,
                     'started_at': task.started_at.isoformat() if task.started_at else None,
                     'completed_at': task.completed_at.isoformat() if task.completed_at else None,
-                    'logs_path': task.logs_path
+                    'logs_path': task.logs_path,
+                    'trigger_word': task.trigger_word or '',
+                    'raw_videos': task.raw_videos or [],
+                    'processed_videos': task.processed_videos or []
                 }
-                # 保存草稿的额外数据（原始视频、处理后视频）
-                if hasattr(task, 'raw_videos'):
-                    task_data['raw_videos'] = task.raw_videos
-                if hasattr(task, 'processed_videos'):
-                    task_data['processed_videos'] = task.processed_videos
                 tasks_data.append(task_data)
             with open(TASKS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(tasks_data, f, ensure_ascii=False, indent=2)
@@ -364,9 +377,10 @@ class TrainingService:
             progress=None
         )
         
-        # 保存额外的草稿数据（原始视频、处理后视频等）
+        # 保存额外的草稿数据（原始视频、处理后视频、触发词等）
         task.raw_videos = data.get('raw_videos', [])
         task.processed_videos = data.get('processed_videos', [])
+        task.trigger_word = data.get('trigger_word', '')
 
         # 保存任务
         self._tasks[task_id] = task
@@ -517,6 +531,97 @@ class TrainingService:
             estimated_duration=None,
             checkpoints={}
         )
+
+    def resume_task(self, task_id: str) -> TrainingTaskResponse:
+        """断点续训 - 从最近的 checkpoint 恢复训练"""
+        task = self._tasks.get(task_id)
+        if not task:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        # 只有失败、停止或已完成的任务可以续训
+        if task.status not in [TrainingStatus.FAILED, TrainingStatus.STOPPED, TrainingStatus.COMPLETED]:
+            raise ValueError(f"当前状态 {task.status.value} 不支持断点续训")
+        
+        # 检查是否有 checkpoint 可用
+        output_dir = task.config.get('output_dir', '')
+        if not output_dir or not Path(output_dir).exists():
+            raise ValueError("未找到训练输出目录，无法续训")
+        
+        # 查找最近的 run_dir 中是否有 checkpoint
+        has_checkpoint = False
+        run_dirs = sorted(Path(output_dir).iterdir(), reverse=True)
+        for d in run_dirs:
+            if d.is_dir() and any(d.glob('global_step*')):
+                has_checkpoint = True
+                break
+        
+        if not has_checkpoint:
+            raise ValueError("未找到可用的 checkpoint 文件，无法续训。请确保之前的训练已保存过 checkpoint。")
+        
+        print(f"[API] 断点续训任务 {task_id}")
+        
+        # 在 config 中设置 resume_from_checkpoint 标记
+        task.config['resume_from_checkpoint'] = True
+        
+        # 重置任务状态（保留 progress，不清除旧日志）
+        task.status = TrainingStatus.QUEUED
+        task.error_message = None
+        task.started_at = None
+        task.completed_at = None
+        
+        # 自动分配 GPU
+        gpu_id = self._get_available_training_gpu()
+        if gpu_id is not None:
+            task.gpu_id = gpu_id
+            task.gpu_name = f"GPU {gpu_id}"
+        else:
+            task.gpu_id = 0
+            task.gpu_name = "GPU 0"
+        
+        self._save_tasks()
+        
+        # 启动训练
+        self._executor.submit(self._start_training_task, task_id)
+        
+        return TrainingTaskResponse(
+            task_id=task_id,
+            status=task.status,
+            gpu_id=task.gpu_id,
+            gpu_name=task.gpu_name,
+            model_type=task.model_type,
+            config=task.config,
+            description=task.description,
+            created_at=task.created_at,
+            queue_position=0,
+            estimated_start_time=None,
+            estimated_duration=None,
+            checkpoints={}
+        )
+
+    def get_task_checkpoints(self, task_id: str) -> list:
+        """获取任务的 checkpoint 列表"""
+        task = self._tasks.get(task_id)
+        if not task:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        output_dir = task.config.get('output_dir', '')
+        if not output_dir or not Path(output_dir).exists():
+            return []
+        
+        checkpoints = []
+        for run_dir in sorted(Path(output_dir).iterdir(), reverse=True):
+            if not run_dir.is_dir():
+                continue
+            for ckpt_dir in sorted(run_dir.glob('global_step*'), reverse=True):
+                step_num = ckpt_dir.name.replace('global_step', '')
+                checkpoints.append({
+                    'name': ckpt_dir.name,
+                    'step': int(step_num) if step_num.isdigit() else 0,
+                    'run_dir': run_dir.name,
+                    'path': str(ckpt_dir),
+                    'size_mb': sum(f.stat().st_size for f in ckpt_dir.rglob('*') if f.is_file()) / 1024 / 1024,
+                })
+        return checkpoints
 
     def _start_training_task(self, task_id: str):
         """启动训练任务（在后台线程中执行）"""
@@ -829,6 +934,28 @@ class TrainingService:
             pass
         return None
 
+    def _extract_error_from_log(self, task_id: str) -> Optional[str]:
+        """从训练日志中提取错误信息"""
+        log_file = f"/tmp/diffusion_pipe_logs/{task_id}.log"
+        if not os.path.exists(log_file):
+            return None
+        try:
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            if 'CUDA out of memory' in content or 'OutOfMemoryError' in content:
+                return "GPU 显存不足 (CUDA OOM)，建议增加 blocks_to_swap 或减少视频帧数"
+            if 'Traceback' in content:
+                # 提取最后一个 traceback 的最后几行
+                lines = content.strip().split('\n')
+                for i in range(len(lines) - 1, -1, -1):
+                    if 'Error' in lines[i] or 'Exception' in lines[i]:
+                        return f"训练异常: {lines[i].strip()}"
+            if 'TRAINING COMPLETE!' in content:
+                return None  # 正常完成
+        except Exception:
+            pass
+        return None
+
     def _update_task_progress(self, task: TrainingTask):
         """更新任务进度 - 从日志文件解析真实进度"""
         if task.status not in [TrainingStatus.RUNNING, TrainingStatus.QUEUED]:
@@ -846,7 +973,7 @@ class TrainingService:
 
         # 检查训练进程是否还在运行
         try:
-            from api.utils.training_wrapper import training_wrapper
+            from utils.training_wrapper import training_wrapper
             status = training_wrapper.get_training_status(task.task_id)
             if status:
                 if not status.get('running'):
@@ -856,7 +983,16 @@ class TrainingService:
                         task.status = TrainingStatus.COMPLETED
                     else:
                         task.status = TrainingStatus.FAILED
-                        task.error_message = f"训练进程退出，返回码: {returncode}"
+                        # 尝试从日志中提取有意义的错误信息
+                        error_detail = self._extract_error_from_log(task.task_id)
+                        if error_detail:
+                            task.error_message = error_detail
+                        elif returncode == -9 or returncode == 137:
+                            task.error_message = "训练进程被系统杀死 (SIGKILL)，可能是内存不足"
+                        elif returncode == -13 or returncode == 141:
+                            task.error_message = "训练进程管道断裂 (SIGPIPE)，可能是 API 服务重启导致"
+                        else:
+                            task.error_message = f"训练进程异常退出，返回码: {returncode}"
                     task.completed_at = datetime.now()
                     self._save_tasks()
                     return
@@ -867,36 +1003,85 @@ class TrainingService:
         log_file = f"/tmp/diffusion_pipe_logs/{task.task_id}.log"
         if os.path.exists(log_file):
             try:
+                import re
                 with open(log_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                 
-                for line in reversed(lines):
+                # 正向遍历所有行，收集每个 step 的 loss
+                step_losses = []  # [(step, loss), ...]
+                last_epoch = 1  # 第一个 epoch 是隐式的（日志只在切换时打印）
+                total_epochs = None
+                last_step = None
+                total_steps = None
+                
+                # 从 task config 获取总 epoch 数
+                if task.config:
+                    total_epochs = task.config.get('epochs') or task.config.get('num_epochs')
+                
+                for line in lines:
                     line = line.strip()
-                    # 解析 Epoch 信息: "Epoch 1/60" 或类似格式
-                    import re
-                    epoch_match = re.search(r'[Ee]poch\s*[:\s]*(\d+)\s*/\s*(\d+)', line)
-                    if epoch_match:
-                        task.progress.current_epoch = int(epoch_match.group(1))
-                        task.progress.total_epochs = int(epoch_match.group(2))
                     
-                    # 解析 Step 信息: "Step 100/1000" 或 "step: 100"
-                    step_match = re.search(r'[Ss]tep\s*[:\s]*(\d+)\s*(?:/\s*(\d+))?', line)
+                    # 解析 "Started new epoch: N" 格式
+                    new_epoch_match = re.search(r'[Ss]tarted\s+new\s+epoch:\s*(\d+)', line)
+                    if new_epoch_match:
+                        last_epoch = int(new_epoch_match.group(1))
+                    
+                    # 解析 "Epoch 1/60" 格式
+                    epoch_slash_match = re.search(r'[Ee]pochs?\s*[:\s]*(\d+)\s*/\s*(\d+)', line)
+                    if epoch_slash_match:
+                        last_epoch = int(epoch_slash_match.group(1))
+                        total_epochs = int(epoch_slash_match.group(2))
+                    
+                    # 解析训练行: "steps: 1 loss: 0.0843 iter time (s): ..."
+                    step_loss_match = re.search(r'steps?:\s*(\d+)\s+loss:\s*([0-9.]+)', line)
+                    if step_loss_match:
+                        step_num = int(step_loss_match.group(1))
+                        loss_val = float(step_loss_match.group(2))
+                        step_losses.append((step_num, loss_val))
+                        last_step = step_num
+                        continue
+                    
+                    # 解析 Step 信息（备选格式）: "Step 100/1000" 或 "step: 100"
+                    step_match = re.search(r'[Ss]teps?\s*[:\s]*(\d+)\s*(?:/\s*(\d+))?', line)
                     if step_match:
-                        task.progress.current_step = int(step_match.group(1))
+                        last_step = int(step_match.group(1))
                         if step_match.group(2):
-                            task.progress.total_steps = int(step_match.group(2))
+                            total_steps = int(step_match.group(2))
                     
-                    # 解析 Loss 信息: "loss: 0.1234" 或 "Loss: 0.1234"
+                    # 解析独立 Loss 信息（备选格式）: "loss: 0.1234"
                     loss_match = re.search(r'[Ll]oss\s*[:\s]*([0-9.]+)', line)
-                    if loss_match:
-                        if not task.metrics:
-                            task.metrics = TrainingMetrics(
-                                current_loss=float(loss_match.group(1)),
-                                avg_loss=float(loss_match.group(1)),
-                                learning_rate=task.config.get('optimizer', {}).get('lr', 2e-5) if task.config else 2e-5
-                            )
-                        else:
-                            task.metrics.current_loss = float(loss_match.group(1))
+                    if loss_match and not step_loss_match:
+                        loss_val = float(loss_match.group(1))
+                        s = last_step if last_step else len(step_losses) + 1
+                        step_losses.append((s, loss_val))
+                
+                # 更新 progress
+                if last_epoch is not None:
+                    task.progress.current_epoch = last_epoch
+                if total_epochs is not None:
+                    task.progress.total_epochs = int(total_epochs)
+                if last_step is not None:
+                    task.progress.current_step = last_step
+                if total_steps is not None:
+                    task.progress.total_steps = total_steps
+                
+                # 更新 metrics
+                if step_losses:
+                    latest_loss = step_losses[-1][1]
+                    lr = task.config.get('optimizer', {}).get('lr', 2e-5) if task.config else 2e-5
+                    if not task.metrics:
+                        task.metrics = TrainingMetrics(
+                            current_loss=latest_loss,
+                            learning_rate=lr,
+                            step_losses=[sl[1] for sl in step_losses]
+                        )
+                    else:
+                        task.metrics.current_loss = latest_loss
+                        task.metrics.step_losses = [sl[1] for sl in step_losses]
+                    
+                    # 计算 best loss
+                    all_losses = [sl[1] for sl in step_losses]
+                    task.metrics.best_loss = min(all_losses)
 
             except Exception as e:
                 print(f"解析训练日志失败: {e}")
@@ -911,6 +1096,46 @@ class TrainingService:
         self._update_gpu_memory(task)
 
         task.updated_at = datetime.now()
+
+    def parse_log_losses(self, task_id: str) -> List[float]:
+        """从日志文件解析所有 step losses（不限制任务状态）
+        
+        用于已完成的任务也能显示完整 loss 曲线
+        """
+        import re
+        log_file = f"/tmp/diffusion_pipe_logs/{task_id}.log"
+        if not os.path.exists(log_file):
+            return []
+        
+        try:
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            
+            step_losses = []
+            last_step = None
+            
+            for line in lines:
+                line = line.strip()
+                
+                # 解析训练行: "steps: 1 loss: 0.0843 iter time (s): ..."
+                step_loss_match = re.search(r'steps?:\s*(\d+)\s+loss:\s*([0-9.]+)', line)
+                if step_loss_match:
+                    step_num = int(step_loss_match.group(1))
+                    loss_val = float(step_loss_match.group(2))
+                    step_losses.append(loss_val)
+                    last_step = step_num
+                    continue
+                
+                # 解析独立 Loss 信息（备选格式）: "loss: 0.1234"
+                loss_match = re.search(r'[Ll]oss\s*[:\s]*([0-9.]+)', line)
+                if loss_match and not step_loss_match:
+                    loss_val = float(loss_match.group(1))
+                    step_losses.append(loss_val)
+            
+            return step_losses
+        except Exception as e:
+            print(f"[Training] 解析日志 loss 失败: {e}")
+            return []
 
     def _update_gpu_memory(self, task: TrainingTask):
         """获取GPU内存使用情况"""
