@@ -1,22 +1,48 @@
 #!/bin/bash
 # 快速重启 API 服务
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 pkill -9 -f gunicorn 2>/dev/null
 sleep 2
 
-cd /home/disk2/diffusion-pipe/api
-source /opt/conda/etc/profile.d/conda.sh
-conda activate lora
+cd "$SCRIPT_DIR"
 
-export STORAGE_ROOT=/home/disk2/lora_training
-export MODELS_ROOT=/home/disk1/pretrained_models
-export TRAINING_OUTPUT_ROOT=/home/disk2/lora_training/outputs
-export DATASET_PATH=/home/disk2/lora_training/datasets
-export RAW_PATH=/home/disk2/lora_training/raw
-export GALLERY_ROOT=/home/disk2/lora_training/gallery
-export INFERENCE_OUTPUT_ROOT=/home/disk2/lora_training/outputs/inference
-export LORA_ROOT=/home/disk2/lora_training/outputs
-export QWEN_VL_API_KEY="sk-3fee7787593f4a3e95f338e8303033c8"
+# 加载 .env
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a; source "$SCRIPT_DIR/.env"; set +a
+elif [ -f "$PROJECT_ROOT/.env" ]; then
+    set -a; source "$PROJECT_ROOT/.env"; set +a
+fi
+
+# 激活 conda
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-lora}"
+if [ -n "$CONDA_EXE" ]; then
+    CONDA_SH="$(dirname $(dirname "$CONDA_EXE"))/etc/profile.d/conda.sh"
+elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
+    CONDA_SH="/opt/conda/etc/profile.d/conda.sh"
+elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    CONDA_SH="$HOME/miniconda3/etc/profile.d/conda.sh"
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    CONDA_SH="$HOME/anaconda3/etc/profile.d/conda.sh"
+else
+    CONDA_SH=""
+fi
+if [ -n "$CONDA_SH" ]; then
+    source "$CONDA_SH"
+    conda activate "$CONDA_ENV_NAME"
+fi
+
+export STORAGE_ROOT="${STORAGE_ROOT:-$PROJECT_ROOT/data}"
+export MODELS_ROOT="${MODELS_ROOT:-$PROJECT_ROOT/pretrained_models}"
+export TRAINING_OUTPUT_ROOT="${TRAINING_OUTPUT_ROOT:-$STORAGE_ROOT/outputs}"
+export DATASET_PATH="${DATASET_PATH:-$STORAGE_ROOT/datasets}"
+export RAW_PATH="${RAW_PATH:-$STORAGE_ROOT/raw}"
+export GALLERY_ROOT="${GALLERY_ROOT:-$STORAGE_ROOT/gallery}"
+export INFERENCE_OUTPUT_ROOT="${INFERENCE_OUTPUT_ROOT:-$STORAGE_ROOT/outputs/inference}"
+export LORA_ROOT="${LORA_ROOT:-$STORAGE_ROOT/outputs}"
+export QWEN_VL_API_KEY="${QWEN_VL_API_KEY:-}"
 
 nohup gunicorn --config gunicorn.conf.py "app:create_app()" > /tmp/api_output.log 2>&1 &
 sleep 8

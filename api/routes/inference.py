@@ -7,6 +7,7 @@ Workflow 集成说明 (wanvideo_2_1_14B_I2V_odeo.json):
 - 节点 81 (TextToLowercase) ← 触发词输入
 - 节点 30 (VHS_VideoCombine) → 输出结果
 """
+import os
 from datetime import datetime
 from flask import Blueprint, request, jsonify, send_file
 from pathlib import Path
@@ -18,8 +19,9 @@ from utils.common import create_response
 
 inference_bp = Blueprint('inference', __name__, url_prefix='/api/v1/inference')
 
-# Workflow 配置
-WORKFLOW_PATH = Path("/home/disk2/comfyui/user/default/workflows/wanvideo_2_1_14B_I2V_odeo.json")
+# Workflow 配置（优先环境变量，默认使用仓库内自带 workflow）
+_DEFAULT_WORKFLOW = str(Path(__file__).parent.parent.parent / "configs" / "workflows" / "wanvideo_2_1_14B_I2V_odeo.json")
+WORKFLOW_PATH = Path(os.environ.get("COMFYUI_WORKFLOW_PATH", _DEFAULT_WORKFLOW))
 
 
 @inference_bp.route('/workflow-info', methods=['GET'])

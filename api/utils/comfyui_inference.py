@@ -19,12 +19,15 @@ import shutil
 import hashlib
 from pathlib import Path
 
-# 路径配置
+# 路径配置（通过环境变量覆盖，默认值为仓库内自带的 workflow）
 DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
-COMFYUI_INPUT_DIR = Path("/home/disk2/comfyui/input")
-COMFYUI_OUTPUT_DIR = Path("/home/disk2/comfyui/output")
-COMFYUI_LORAS_DIR = Path("/home/disk2/comfyui/models/loras")
-WORKFLOW_PATH = Path("/home/disk2/comfyui/user/default/workflows/wanvideo_2_1_14B_I2V_odeo.json")
+_COMFYUI_ROOT = Path(os.environ.get("COMFYUI_ROOT", "/home/disk2/comfyui"))
+COMFYUI_INPUT_DIR = Path(os.environ.get("COMFYUI_INPUT_DIR", str(_COMFYUI_ROOT / "input")))
+COMFYUI_OUTPUT_DIR = Path(os.environ.get("COMFYUI_OUTPUT_DIR", str(_COMFYUI_ROOT / "output")))
+COMFYUI_LORAS_DIR = Path(os.environ.get("COMFYUI_LORAS_DIR", str(_COMFYUI_ROOT / "models" / "loras")))
+# Workflow: 优先使用环境变量，其次使用仓库内自带的 workflow 文件
+_DEFAULT_WORKFLOW = str(Path(__file__).parent.parent.parent / "configs" / "workflows" / "wanvideo_2_1_14B_I2V_odeo.json")
+WORKFLOW_PATH = Path(os.environ.get("COMFYUI_WORKFLOW_PATH", _DEFAULT_WORKFLOW))
 
 # 运行时使用的 ComfyUI URL（由 --comfyui_url 参数或 gpu 映射决定）
 COMFYUI_URL = DEFAULT_COMFYUI_URL

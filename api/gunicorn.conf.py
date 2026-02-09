@@ -1,16 +1,22 @@
 # Gunicorn 配置文件 - 优化大文件上传
 import multiprocessing
 import os
+from pathlib import Path
 
-# 设置环境变量（确保所有 worker 都能访问）
-os.environ.setdefault('STORAGE_ROOT', '/home/disk2/lora_training')
-os.environ.setdefault('MODELS_ROOT', '/home/disk1/pretrained_models')
-os.environ.setdefault('TRAINING_OUTPUT_ROOT', '/home/disk2/lora_training/outputs')
-os.environ.setdefault('DATASET_PATH', '/home/disk2/lora_training/datasets')
-os.environ.setdefault('RAW_PATH', '/home/disk2/lora_training/raw')
-os.environ.setdefault('GALLERY_ROOT', '/home/disk2/lora_training/gallery')
-os.environ.setdefault('INFERENCE_OUTPUT_ROOT', '/home/disk2/lora_training/outputs/inference')
-os.environ.setdefault('LORA_ROOT', '/home/disk2/lora_training/outputs')
+# 项目根目录（gunicorn.conf.py 位于 api/ 下，项目根在上一级）
+_PROJECT_ROOT = str(Path(__file__).parent.parent)
+
+# 设置环境变量默认值（确保所有 worker 都能访问）
+# 这些值仅在环境变量未设置时生效，实际部署时应通过 .env 或 start_api.sh 设置
+_storage = os.environ.get('STORAGE_ROOT', os.path.join(_PROJECT_ROOT, 'data'))
+os.environ.setdefault('STORAGE_ROOT', _storage)
+os.environ.setdefault('MODELS_ROOT', os.path.join(_PROJECT_ROOT, 'pretrained_models'))
+os.environ.setdefault('TRAINING_OUTPUT_ROOT', os.path.join(_storage, 'outputs'))
+os.environ.setdefault('DATASET_PATH', os.path.join(_storage, 'datasets'))
+os.environ.setdefault('RAW_PATH', os.path.join(_storage, 'raw'))
+os.environ.setdefault('GALLERY_ROOT', os.path.join(_storage, 'gallery'))
+os.environ.setdefault('INFERENCE_OUTPUT_ROOT', os.path.join(_storage, 'outputs', 'inference'))
+os.environ.setdefault('LORA_ROOT', os.path.join(_storage, 'outputs'))
 
 # 绑定地址
 bind = "0.0.0.0:8080"

@@ -44,7 +44,7 @@ def get_task_dataset_path(task_id=None):
     return BASE_DATASET_PATH
 
 # 千问 VL API 配置（从环境变量获取）
-QWEN_VL_API_KEY = os.environ.get('QWEN_VL_API_KEY', 'sk-3fee7787593f4a3e95f338e8303033c8')
+QWEN_VL_API_KEY = os.environ.get('QWEN_VL_API_KEY', '')
 QWEN_VL_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 
